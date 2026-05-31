@@ -1,8 +1,3 @@
--- Esperamos a que el juego cargue el mapa y los assets completamente
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
-
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -262,11 +257,16 @@ local function StartAutoJoinTrialLoop()
                 local key = string.format("%04d-%02d-%02d-%02d-%02d", now.year, now.month, now.day, now.hour, now.min)
                 if key ~= LastTrialJoinKey then
                     LastTrialJoinKey = key
-                    JoinTrial()
+                    -- Reintentar JoinTrial durante 20 segundos cada 2 segundos
+                    local start = os.clock()
+                    repeat
+                        JoinTrial()
+                        task.wait(2)
+                    until (os.clock() - start) > 20
                 end
             end
 
-            task.wait(5)
+            task.wait(1)
         end
     end)
 end
