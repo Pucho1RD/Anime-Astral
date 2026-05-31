@@ -1,0 +1,497 @@
+-- Esperamos a que el juego cargue el mapa y los assets completamente
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+local State = {
+    SelectedMap = nil,
+    SelectedEnemy = nil,
+    AutofarmEnabled = false,
+    AutoJoinTrial = false,
+    TrialEnabled = false,
+    AutoExitTrial = false,
+    ExitWave = nil,
+    ExitTeleporter = nil,
+}
+
+local function GetMaps()
+    local list = {}
+    local worlds = Workspace:FindFirstChild("Worlds")
+    if not worlds then return list end
+
+    for _, map in ipairs(worlds:GetChildren()) do
+        if map:IsA("Folder") or map:IsA("Model") then
+            table.insert(list, map.Name)
+        end
+    end
+
+    table.sort(list)
+    return list
+end
+
+local function GetEnemies(mapName)
+    local list = {}
+    local worlds = Workspace:FindFirstChild("Worlds")
+    local map = worlds and worlds:FindFirstChild(mapName)
+    local folder = map and map:FindFirstChild("Enemies")
+    if not folder then return list end
+
+    local seen = {}
+    for _, enemy in ipairs(folder:GetChildren()) do
+        if enemy:IsA("Model") and enemy:FindFirstChild("HumanoidRootPart") then
+            local name = enemy.Name
+            if not seen[name] then
+                table.insert(list, name)
+                seen[name] = true
+            end
+        end
+    end
+
+    table.sort(list)
+    return list
+end
+
+local function GetTeleporterOptions()
+    local list = {}
+    local worlds = Workspace:FindFirstChild("Worlds")
+    if not worlds then return list end
+
+    for _, worldName in ipairs({"1", "2", "3", "4"}) do
+        local world = worlds:FindFirstChild(worldName)
+        local teleporter = world and world:FindFirstChild("Teleporter")
+        if teleporter then
+            table.insert(list, worldName)
+        end
+    end
+
+    return list
+end
+
+local function GetSelectedTeleporterPart()
+    local worlds = Workspace:FindFirstChild("Worlds")
+    local selectedWorld = State.ExitTeleporter
+    if not worlds or not selectedWorld then return nil end
+
+    local world = worlds:FindFirstChild(selectedWorld)
+    local teleporter = world and world:FindFirstChild("Teleporter")
+    if not teleporter then return nil end
+
+    if teleporter:IsA("BasePart") then
+        local attr = teleporter:GetAttribute("TeleportTo")
+        if typeof(attr) == "string" then
+            local expectedWorld = tostring(selectedWorld)
+            local prefix = expectedWorld .. "/"
+            if string.sub(attr, 1, #prefix) ~= prefix then
+                warn("[Trial Exit] Teleporter TeleportTo no coincide con el mundo seleccionado: " .. tostring(attr))
+                return nil
+            end
+        end
+        return teleporter
+    end
+
+    local teleporterPart = teleporter:FindFirstChildWhichIsA("BasePart")
+    if teleporterPart then
+        local attr = teleporterPart:GetAttribute("TeleportTo")
+        if typeof(attr) == "string" then
+            local expectedWorld = tostring(selectedWorld)
+            local prefix = expectedWorld .. "/"
+            if string.sub(attr, 1, #prefix) ~= prefix then
+                warn("[Trial Exit] Teleporter TeleportTo no coincide con el mundo seleccionado: " .. tostring(attr))
+                return nil
+            end
+        end
+        return teleporterPart
+    end
+
+    return nil
+end
+
+local function GetCurrentTrialWave()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local raid = gui and gui:FindFirstChild("RaidGui")
+    local main = raid and raid:FindFirstChild("Main")
+    local wave = main and main:FindFirstChild("Wave")
+    if not wave then return nil end
+
+    if wave:IsA("TextLabel") or wave:IsA("TextBox") then
+        return wave.Text
+    end
+
+    return nil
+end
+
+local function CheckTrialExit()
+    local currentWave = GetCurrentTrialWave()
+    if not currentWave then
+        warn("[Trial Exit] No se encontró PlayerGui.RaidGui.Main.Wave")
+        return
+    end
+
+    if not State.ExitWave or tostring(currentWave) ~= tostring(State.ExitWave) then
+        warn("[Trial Exit] Wave actual: " .. tostring(currentWave) .. ", buscando: " .. tostring(State.ExitWave))
+        return
+    end
+
+    local targetPart = GetSelectedTeleporterPart()
+    if not targetPart then
+        warn("[Trial Exit] No se encontró el teleporter seleccionado")
+        return
+    end
+
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.CFrame = targetPart.CFrame * CFrame.new(0, 0, 3)
+    end
+end
+
+local function IsEnemyGone(enemy)
+    if not enemy or not enemy.Parent or not enemy:FindFirstChild("HumanoidRootPart") then
+        return true
+    end
+    local isDead = enemy:GetAttribute("EnemyDead")
+    return isDead == true
+end
+
+local function IsEnemyFinished(enemy)
+    return IsEnemyGone(enemy)
+end
+
+-- =====================
+-- SELECCIÓN DE ENEMIGOS
+-- =====================
+local function GetAliveEnemies()
+    local list = {}
+    if not State.SelectedMap or not State.SelectedEnemy then return list end
+
+    local worlds = Workspace:FindFirstChild("Worlds")
+    local map = worlds and worlds:FindFirstChild(State.SelectedMap)
+    local folder = map and map:FindFirstChild("Enemies")
+    if not folder then return list end
+
+    for _, enemy in ipairs(folder:GetChildren()) do
+        if enemy:IsA("Model") and enemy.Name == State.SelectedEnemy and enemy:FindFirstChild("HumanoidRootPart") then
+            local isDead = enemy:GetAttribute("EnemyDead")
+            if isDead ~= true then
+                table.insert(list, enemy)
+            end
+        end
+    end
+    return list
+end
+
+local FarmToken = 0
+
+local function TeleportToEnemy(enemy)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local targetHRP = enemy and enemy:FindFirstChild("HumanoidRootPart")
+    if hrp and targetHRP then
+        hrp.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 3)
+    end
+end
+
+local function RunAutoFarm()
+    FarmToken += 1
+    local myToken = FarmToken
+
+    task.spawn(function()
+        while State.AutofarmEnabled and myToken == FarmToken do
+            local enemies = GetAliveEnemies()
+            if #enemies == 0 then
+                task.wait(0.5)
+                continue
+            end
+
+            for _, enemy in ipairs(enemies) do
+                if not State.AutofarmEnabled or myToken ~= FarmToken then break end
+
+                while State.AutofarmEnabled and myToken == FarmToken and not IsEnemyFinished(enemy) do
+                    TeleportToEnemy(enemy)
+                    task.wait(0.05)
+                end
+
+                task.wait(0.2) -- Pequeña pausa antes del siguiente spawn
+            end
+        end
+    end)
+end
+
+local BestPowerRunning = false
+local AutoJoinTrialToken = 0
+local LastTrialJoinKey = nil
+local AutoExitTrialToken = 0
+local LastTrialExitKey = nil
+
+local function JoinTrial()
+    local args = {
+        [1] = {
+            [1] = {
+                ["BridgeTuplePayload"] = true,
+                ["Payload"] = {
+                    [1] = "Join",
+                    [2] = "Easy",
+                    ["n"] = 2,
+                },
+            },
+            [2] = "\160",
+        },
+    }
+
+    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
+    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
+    if remote and typeof(remote.FireServer) == "function" then
+        remote:FireServer(unpack(args))
+    end
+end
+
+local function StartAutoJoinTrialLoop()
+    AutoJoinTrialToken += 1
+    local token = AutoJoinTrialToken
+
+    task.spawn(function()
+        while State.AutoJoinTrial and token == AutoJoinTrialToken do
+            local now = os.date("*t")
+            if now.hour == 0 and (now.min == 0 or now.min == 30) then
+                local key = string.format("%04d-%02d-%02d-%02d-%02d", now.year, now.month, now.day, now.hour, now.min)
+                if key ~= LastTrialJoinKey then
+                    LastTrialJoinKey = key
+                    JoinTrial()
+                end
+            end
+
+            task.wait(5)
+        end
+    end)
+end
+
+local function StartAutoExitTrialLoop()
+    AutoExitTrialToken += 1
+    local token = AutoExitTrialToken
+
+    task.spawn(function()
+        while State.AutoExitTrial and token == AutoExitTrialToken do
+            if State.ExitWave and State.ExitTeleporter then
+                local currentWave = GetCurrentTrialWave()
+                if currentWave and tostring(currentWave) == tostring(State.ExitWave) then
+                    local key = string.format("%s-%s", tostring(currentWave), tostring(State.ExitTeleporter))
+                    if key ~= LastTrialExitKey then
+                        LastTrialExitKey = key
+                        CheckTrialExit()
+                    end
+                end
+            end
+            task.wait(2)
+        end
+    end)
+end
+
+local function BestPower()
+    if BestPowerRunning then return end
+    BestPowerRunning = true
+
+    task.spawn(function()
+        while BestPowerRunning do
+            local args = {
+                [1] = {
+                    [1] = "Power",
+                    [2] = "<"
+                }
+            }
+
+            ReplicatedStorage.BridgeNet2.dataRemoteEvent:FireServer(unpack(args))
+            task.wait(120)
+        end
+    end)
+end
+
+-- INTERFAZ RAYFIELD
+local Window = Rayfield:CreateWindow({Name = "Anime Astral - Pro AutoFarm"})
+local Tab = Window:CreateTab("Farm", "sword")
+local EnemyDropdown
+
+Tab:CreateDropdown({
+    Name = "Seleccionar Mapa",
+    Options = GetMaps(),
+    Callback = function(Option)
+        State.SelectedMap = Option[1]
+        State.SelectedEnemy = nil
+        if EnemyDropdown then
+            EnemyDropdown:Refresh(GetEnemies(State.SelectedMap), true)
+        end
+    end,
+})
+
+EnemyDropdown = Tab:CreateDropdown({
+    Name = "Seleccionar Enemigo",
+    Options = {},
+    Callback = function(Option) State.SelectedEnemy = Option[1] end,
+})
+
+Tab:CreateToggle({
+    Name = "AutoFarm",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.AutofarmEnabled = Value
+        if Value then
+            RunAutoFarm()
+        else
+            FarmToken += 1 -- Cancela el bucle anterior
+        end
+    end,
+})
+
+-- PESTAÑA TRIAL
+local TrialTab = Window:CreateTab("Trial", "clock")
+
+TrialTab:CreateInput({
+    Name = "Wave para Salir Trial",
+    PlaceholderText = "Ej: 10",
+    Text = "",
+    Callback = function(Value)
+        State.ExitWave = Value
+    end,
+})
+
+local TeleporterDropdown = TrialTab:CreateDropdown({
+    Name = "Mapa para Salir Trial",
+    Options = GetTeleporterOptions(),
+    Callback = function(Option)
+        State.ExitTeleporter = Option[1]
+    end,
+})
+
+TrialTab:CreateToggle({
+    Name = "Auto Exit Trial",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.AutoExitTrial = Value
+        if Value then
+            StartAutoExitTrialLoop()
+        else
+            AutoExitTrialToken += 1
+        end
+    end,
+})
+
+TrialTab:CreateToggle({
+    Name = "Auto Join Trial",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.AutoJoinTrial = Value
+        if Value then
+            StartAutoJoinTrialLoop()
+        else
+            AutoJoinTrialToken += 1
+        end
+    end
+})
+
+TrialTab:CreateToggle({
+    Name = "AutoFarm Trial",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.TrialEnabled = Value
+        if Value then
+            task.spawn(function()
+                -- Buscamos la carpeta de forma segura pero directa
+                local arenas = Workspace:WaitForChild("TimeTrialArenas", 5)
+                local easyArena = arenas and arenas:WaitForChild("Easy", 5)
+                local TrialFolder = easyArena and easyArena:FindFirstChild("Enemies")
+                
+                if not TrialFolder then 
+                    print("[AutoFarm Error] No se encontró la carpeta de enemigos de la Trial.")
+                    return 
+                end
+                
+                while State.TrialEnabled do
+                    local target = nil
+                    
+                    -- Buscamos el objetivo más cercano o el primero disponible
+                    for _, enemy in pairs(TrialFolder:GetChildren()) do
+                        if enemy:FindFirstChild("HumanoidRootPart") then
+                            -- Opcional: Validar que tenga vida real si el juego usa ese atributo en la trial
+                            local health = enemy:GetAttribute("HealthReal")
+                            if health == nil or health > 0 then
+                                target = enemy
+                                break
+                            end
+                        end
+                    end
+                    
+                    if target and target:FindFirstChild("HumanoidRootPart") then
+                        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                        if hrp then
+                            hrp.CFrame = target.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+                        end
+                        
+                        -- Reducimos el tiempo de chequeo a 0.01 (bucle ultra rápido)
+                        -- El bucle se rompe en el instante exacto en que el NPC muere o desaparece
+                        repeat 
+                            task.wait(0.01) 
+                        until not State.TrialEnabled or not target.Parent or not target:FindFirstChild("HumanoidRootPart")
+                        
+                        -- ELIMINAMOS el task.wait(0.1) que estaba aquí para que el TP al siguiente sea inmediato
+                    else
+                        -- Si no hay enemigos en la arena, espera un parpadeo para volver a escanear (evita lag)
+                        task.wait(0.05)
+                    end
+                end
+            end)
+        end
+    end,
+})
+
+local OthersTab = Window:CreateTab("Others", "clock")
+
+local VirtualUser = game:GetService("VirtualUser")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local AutoCornerClick = false
+
+OthersTab:CreateToggle({
+    Name = "Anti AFK",
+    CurrentValue = true,
+    Callback = function(v)
+        AutoCornerClick = v
+    end
+})
+
+task.spawn(function()
+    while true do
+        task.wait(20)
+
+        if not AutoCornerClick then continue end
+
+        local camera = workspace.CurrentCamera
+        if not camera then continue end
+
+        local viewport = camera.ViewportSize
+
+        -- 📍 Posición esquina inferior derecha
+        local x = viewport.X - 5
+        local y = viewport.Y - 5
+
+        -- 👇 Simula click
+        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+    end
+end)
+
+OthersTab:CreateToggle({
+    Name = "Best Power",
+    CurrentValue = false,
+    Callback = function(Value)
+        if Value then
+            BestPower()
+        else
+            BestPowerRunning = false
+        end
+    end,
+})
