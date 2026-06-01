@@ -2,6 +2,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local LocalPlayer = Players.LocalPlayer
 
 local State = {
@@ -17,6 +18,11 @@ local State = {
     ExitTeleporter = nil,
     RaidExitWave = nil,
     RaidExitTeleporter = nil,
+    StarsWorld = "World1",
+    StarsRarity = nil,
+    StarsEnabled = false,
+    Swords = false,
+    AutoJoinRaid = false,
 }
 
 local TrialExitCFrames = {
@@ -189,6 +195,79 @@ local function GetCurrentRaidWave()
     return nil
 end
 
+local function SimulateGuiClick(guiObject)
+    if not guiObject or not guiObject:IsA("GuiObject") then
+        return false
+    end
+
+    local absPos = guiObject.AbsolutePosition
+    local absSize = guiObject.AbsoluteSize
+    if absSize.X <= 0 or absSize.Y <= 0 then
+        return false
+    end
+
+    local x = absPos.X + absSize.X / 2
+    local y = absPos.Y + absSize.Y / 2 + 5
+    print("[Raid Exit Debug] Simulando click en GUI en pantalla: " .. tostring(x) .. ", " .. tostring(y))
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+    return true
+end
+
+local function TryLeaveRaidWithGui()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local raid = gui and gui:FindFirstChild("RaidGui")
+    local main = raid and raid:FindFirstChild("Main")
+    local leaveButton = main and main:FindFirstChild("Leave")
+
+    if leaveButton and leaveButton:IsA("GuiObject") then
+        print("[Raid Exit Debug] Botón Leave encontrado, simulando click...")
+        if SimulateGuiClick(leaveButton) then
+            task.wait(0.5)
+            return true
+        end
+    end
+
+    warn("[Raid Exit] No se encontró PlayerGui.RaidGui.Main.Leave o no es un GuiObject")
+    return false
+end
+
+local function TryStartRaidWithGui()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local windows = gui and gui:FindFirstChild("Windows")
+    local raidTemplate = windows and windows:FindFirstChild("RaidTemplate")
+    
+    if not raidTemplate then
+        warn("[Raid Join] No se encontró RaidTemplate")
+        return false
+    end
+
+    -- Hacer visible
+    raidTemplate.Visible = true
+    print("[Raid Join Debug] RaidTemplate hecho visible")
+    task.wait(0.3)
+
+    -- Buscar el botón Start
+    local main = raidTemplate:FindFirstChild("Main")
+    local actions = main and main:FindFirstChild("Actions")
+    local startButton = actions and actions:FindFirstChild("Start")
+
+    if startButton and startButton:IsA("GuiObject") then
+        print("[Raid Join Debug] Botón Start encontrado, simulando click...")
+        if SimulateGuiClick(startButton) then
+            task.wait(0.5)
+        end
+    else
+        warn("[Raid Join] No se encontró Players.LocalPlayer.PlayerGui.Windows.RaidTemplate.Main.Actions.Start")
+    end
+
+    -- Ocultar de nuevo
+    task.wait(0.2)
+    raidTemplate.Visible = false
+    print("[Raid Join Debug] RaidTemplate ocultado")
+    return true
+end
+
 local function GetTrialExitCFrame()
     local selectedWorld = State.ExitTeleporter
     if not selectedWorld then
@@ -293,6 +372,7 @@ local function CheckRaidExit()
     print("[Raid Exit Debug] Estado interno: RaidExitTeleporter=" .. tostring(State.RaidExitTeleporter) .. ", CFrame encontrado=" .. tostring(exitCFrame ~= nil))
     if exitCFrame then
         print("[Raid Exit Debug] Usando CFrame directo para Worlds[" .. tostring(State.RaidExitTeleporter) .. "]")
+        TryLeaveRaidWithGui()
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if hrp then
@@ -453,6 +533,9 @@ local DoujutsuToken = 0
 local HakiToken = 0
 local FamilyToken = 0
 local RacesToken = 0
+local SwordsToken = 0
+local StarsToken = 0
+local AutoJoinRaidToken = 0
 
 local function JoinTrial()
     print("[Trial Join] Usando teletransporte directo al part de unión")
@@ -466,27 +549,35 @@ local function StartAutoJoinTrialLoop()
     local token = AutoJoinTrialToken
 
     task.spawn(function()
-        -- Intento inmediato para pruebas fuera de horario
-        if State.AutoJoinTrial and token == AutoJoinTrialToken then
-            JoinTrial()
-        end
-
         while State.AutoJoinTrial and token == AutoJoinTrialToken do
             local now = os.date("*t")
-            if now.hour == 0 and (now.min == 0 or now.min == 30) then
+            if now.min == 0 or now.min == 30 then
                 local key = string.format("%04d-%02d-%02d-%02d-%02d", now.year, now.month, now.day, now.hour, now.min)
                 if key ~= LastTrialJoinKey then
                     LastTrialJoinKey = key
-                    -- Reintentar JoinTrial durante 20 segundos cada 2 segundos
+                    -- Reintentar JoinTrial durante 6 segundos cada 2 segundos
                     local start = os.clock()
                     repeat
                         JoinTrial()
                         task.wait(2)
-                    until (os.clock() - start) > 20
+                    until (os.clock() - start) > 6
                 end
             end
 
             task.wait(1)
+        end
+    end)
+end
+
+local function StartAutoJoinRaidLoop()
+    AutoJoinRaidToken += 1
+    local token = AutoJoinRaidToken
+
+    task.spawn(function()
+        while State.AutoJoinRaid and token == AutoJoinRaidToken do
+            print("[Raid Join Debug] Intentando unirse a raid automáticamente...")
+            TryStartRaidWithGui()
+            task.wait(5)
         end
     end)
 end
@@ -573,6 +664,56 @@ local function BestPower()
     end)
 end
 
+local function BuildStarsDeletePayload(rarity)
+    local rankOrder = {"Mythical", "Legendary", "Epic", "Rare", "Uncommon", "Common"}
+    local payload = {}
+    local shouldDelete = false
+
+    for _, rank in ipairs(rankOrder) do
+        if rank == rarity then
+            shouldDelete = true
+        end
+        if shouldDelete then
+            payload[rank] = "delete"
+        end
+    end
+
+    return payload
+end
+
+local function FireStars()
+    local world = State.StarsWorld
+    local rarity = State.StarsRarity
+    if not world or not rarity then
+        warn("[Stars] Selecciona World y Rareza antes de enviar")
+        return
+    end
+
+    local deletePayload = BuildStarsDeletePayload(rarity)
+    local args = {
+        [1] = {
+            [1] = {
+                ["__BridgeTuplePayload__"] = true,
+                ["Payload"] = {
+                    [1] = world,
+                    [2] = deletePayload,
+                    ["n"] = 2,
+                },
+            },
+            [2] = "\\"
+        }
+    }
+
+    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
+    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
+    if remote and typeof(remote.FireServer) == "function" then
+        print("[Stars] Enviando stars a " .. tostring(world) .. " con rareza " .. tostring(rarity))
+        remote:FireServer(unpack(args))
+    else
+        warn("[Stars] Remote no encontrado")
+    end
+end
+
 -- INTERFAZ RAYFIELD
 local Window = Rayfield:CreateWindow({Name = "Anime Astral - Pro AutoFarm"})
 local Tab = Window:CreateTab("Farm", "sword")
@@ -649,6 +790,11 @@ TrialTab:CreateToggle({
         State.AutoJoinTrial = Value
         if Value then
             StartAutoJoinTrialLoop()
+            local now = os.date("*t")
+            if now.min == 0 or now.min == 30 then
+                print("[Trial Join] Ventana activa al activar toggle, intentando join inmediato")
+                JoinTrial()
+            end
         else
             AutoJoinTrialToken += 1
         end
@@ -715,6 +861,19 @@ RaidTab:CreateToggle({
             RunRaidAutoFarm()
         else
             RaidFarmToken += 1
+        end
+    end,
+})
+
+RaidTab:CreateToggle({
+    Name = "Auto Join Raid",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.AutoJoinRaid = Value
+        if Value then
+            StartAutoJoinRaidLoop()
+        else
+            AutoJoinRaidToken += 1
         end
     end,
 })
@@ -875,6 +1034,76 @@ GachaTab:CreateToggle({
             end)
         else
             FamilyToken += 1
+        end
+    end,
+})
+
+GachaTab:CreateToggle({
+    Name = "Swords",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.Swords = Value
+        if Value then
+            SwordsToken += 1
+            local token = SwordsToken
+            task.spawn(function()
+                while State.Swords and token == SwordsToken do
+                    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
+                    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
+                    local args = {
+                        [1] = {
+                            [1] = "World0",
+                            [2] = "\145"
+                        }
+                    }
+                    if remote and typeof(remote.FireServer) == "function" then
+                        remote:FireServer(unpack(args))
+                    else
+                        warn("[Gacha Swords] Remote no encontrado")
+                    end
+                    task.wait(0.3)
+                end
+            end)
+        else
+            SwordsToken += 1
+        end
+    end,
+})
+
+local StarsTab = Window:CreateTab("Stars", "star")
+
+StarsTab:CreateDropdown({
+    Name = "World",
+    Options = {"World1", "World2", "World3", "World4"},
+    Callback = function(Option)
+        State.StarsWorld = Option[1]
+    end,
+})
+
+StarsTab:CreateDropdown({
+    Name = "delete rarity",
+    Options = {"Mythical", "Legendary", "Epic", "Rare", "Uncommon", "Common"},
+    Callback = function(Option)
+        State.StarsRarity = Option[1]
+    end,
+})
+
+StarsTab:CreateToggle({
+    Name = "Auto Stars",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.StarsEnabled = Value
+        if Value then
+            StarsToken += 1
+            local token = StarsToken
+            task.spawn(function()
+                while State.StarsEnabled and token == StarsToken do
+                    FireStars()
+                    task.wait(0.2)
+                end
+            end)
+        else
+            StarsToken += 1
         end
     end,
 })
