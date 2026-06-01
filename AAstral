@@ -7,7 +7,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local State = {
     SelectedMap = nil,
-    SelectedEnemy = nil,
+    SelectedEnemies = {},
     AutofarmEnabled = false,
     RaidAutoFarm = false,
     AutoExitRaid = false,
@@ -422,15 +422,21 @@ end
 -- =====================
 local function GetAliveEnemies()
     local list = {}
-    if not State.SelectedMap or not State.SelectedEnemy then return list end
+    if not State.SelectedMap or #State.SelectedEnemies == 0 then return list end
 
     local worlds = Workspace:FindFirstChild("Worlds")
     local map = worlds and worlds:FindFirstChild(State.SelectedMap)
     local folder = map and map:FindFirstChild("Enemies")
     if not folder then return list end
 
+    -- Crear tabla para búsqueda rápida
+    local selectedEnemySet = {}
+    for _, enemyName in ipairs(State.SelectedEnemies) do
+        selectedEnemySet[enemyName] = true
+    end
+
     for _, enemy in ipairs(folder:GetChildren()) do
-        if enemy:IsA("Model") and enemy.Name == State.SelectedEnemy and enemy:FindFirstChild("HumanoidRootPart") then
+        if enemy:IsA("Model") and selectedEnemySet[enemy.Name] and enemy:FindFirstChild("HumanoidRootPart") then
             local isDead = enemy:GetAttribute("EnemyDead")
             if isDead ~= true then
                 table.insert(list, enemy)
@@ -715,7 +721,7 @@ local function FireStars()
 end
 
 -- INTERFAZ RAYFIELD
-local Window = Rayfield:CreateWindow({Name = "Anime Astral - Pro AutoFarm"})
+local Window = Rayfield:CreateWindow({Name = "Anime Astral"})
 local Tab = Window:CreateTab("Farm", "sword")
 local EnemyDropdown
 
@@ -724,7 +730,7 @@ Tab:CreateDropdown({
     Options = GetMaps(),
     Callback = function(Option)
         State.SelectedMap = Option[1]
-        State.SelectedEnemy = nil
+        State.SelectedEnemies = {}
         if EnemyDropdown then
             EnemyDropdown:Refresh(GetEnemies(State.SelectedMap), true)
         end
@@ -732,9 +738,13 @@ Tab:CreateDropdown({
 })
 
 EnemyDropdown = Tab:CreateDropdown({
-    Name = "Seleccionar Enemigo",
+    Name = "Seleccionar Enemigos",
     Options = {},
-    Callback = function(Option) State.SelectedEnemy = Option[1] end,
+    MultiSelect = true,
+    MultipleOptions = true,
+    Callback = function(Options)
+        State.SelectedEnemies = Options
+    end,
 })
 
 Tab:CreateToggle({
