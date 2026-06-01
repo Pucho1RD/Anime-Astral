@@ -29,21 +29,27 @@ local TrialExitCFrames = {
 local TrialJoinCFrame = CFrame.new(1842.82227, 415.041351, -2411.81909, 0.992613852, 0, -0.121316783, 0, 1, 0, 0.121316783, 0, 0.992613852)
 
 local function TeleportPlayerToCFrame(cframe)
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        hrp.CFrame = cframe
-        return true
+    local timeout = 3 -- segundos
+    local start = os.clock()
+    while (os.clock() - start) <= timeout do
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.CFrame = cframe
+            print("[Teleport] HumanoidRootPart encontrado y teletransportado")
+            return true
+        end
+        task.wait(0.1)
     end
 
-    warn("[Teleport] No se encontró HumanoidRootPart para teletransportar")
+    warn("[Teleport] No se encontró HumanoidRootPart tras esperar " .. tostring(timeout) .. "s")
     return false
 end
 
 local function GetTrialJoinPart()
     local targetPos = Vector3.new(1842.82227, 415.041351, -2411.81909)
     for _, descendant in ipairs(Workspace:GetDescendants()) do
-        if descendant:IsA("BasePart") and (descendant.Position - targetPos).Magnitude < 2 then
+        if descendant:IsA("BasePart") and (descendant.Position - targetPos).Magnitude < 6 then
             print("[Trial Join Debug] Posible join part encontrado: " .. descendant:GetFullName())
             return descendant
         end
@@ -52,13 +58,8 @@ local function GetTrialJoinPart()
 end
 
 local function TeleportToTrialJoin()
-    local joinPart = GetTrialJoinPart()
-    if joinPart then
-        print("[Trial Join Debug] Teletransportando al part de unión a trial")
-        return TeleportPlayerToCFrame(joinPart.CFrame)
-    end
-
-    print("[Trial Join Debug] No se encontró el join part, usando CFrame fijo de unión a trial")
+    -- Forzar TP a CFrame fijo, no depender del TrialStation que puede desaparecer.
+    print("[Trial Join Debug] Teletransportando con CFrame fijo de unión a trial")
     return TeleportPlayerToCFrame(TrialJoinCFrame)
 end
 
@@ -172,32 +173,6 @@ local function GetCurrentTrialRoom()
     return nil
 end
 
-local function GetTrialLeaveButton()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    local trial = gui and gui:FindFirstChild("TrialGui")
-    local main = trial and trial:FindFirstChild("Main")
-    local leave = main and main:FindFirstChild("Leave")
-
-    if leave and leave:IsA("ImageButton") then
-        return leave
-    end
-
-    return nil
-end
-
-local function GetRaidLeaveButton()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    local raid = gui and gui:FindFirstChild("RaidGui")
-    local main = raid and raid:FindFirstChild("Main")
-    local leave = main and main:FindFirstChild("Leave")
-
-    if leave and leave:IsA("ImageButton") then
-        return leave
-    end
-
-    return nil
-end
-
 local function GetCurrentRaidWave()
     local gui = LocalPlayer:FindFirstChild("PlayerGui")
     local raid = gui and gui:FindFirstChild("RaidGui")
@@ -249,18 +224,6 @@ local function CheckTrialExit()
     end
 
     local exitCFrame = GetTrialExitCFrame()
-    if exitCFrame then
-        print("[Trial Exit Debug] Usando CFrame directo para Worlds[" .. tostring(State.ExitTeleporter) .. "]")
-        local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            hrp.CFrame = exitCFrame
-            return true
-        end
-
-        warn("[Trial Exit] No se encontró HumanoidRootPart para teletransportar")
-        return false
-    end
     if exitCFrame then
         print("[Trial Exit Debug] Usando CFrame directo para Worlds[" .. tostring(State.ExitTeleporter) .. "]")
         local char = LocalPlayer.Character
@@ -493,7 +456,9 @@ local RacesToken = 0
 
 local function JoinTrial()
     print("[Trial Join] Usando teletransporte directo al part de unión")
-    TeleportToTrialJoin()
+    if not TeleportToTrialJoin() then
+        warn("[Trial Join] Falló el teletransporte directo a trial")
+    end
 end
 
 local function StartAutoJoinTrialLoop()
@@ -501,6 +466,11 @@ local function StartAutoJoinTrialLoop()
     local token = AutoJoinTrialToken
 
     task.spawn(function()
+        -- Intento inmediato para pruebas fuera de horario
+        if State.AutoJoinTrial and token == AutoJoinTrialToken then
+            JoinTrial()
+        end
+
         while State.AutoJoinTrial and token == AutoJoinTrialToken do
             local now = os.date("*t")
             if now.hour == 0 and (now.min == 0 or now.min == 30) then
