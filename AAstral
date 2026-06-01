@@ -8,12 +8,59 @@ local State = {
     SelectedMap = nil,
     SelectedEnemy = nil,
     AutofarmEnabled = false,
+    RaidAutoFarm = false,
+    AutoExitRaid = false,
     AutoJoinTrial = false,
     TrialEnabled = false,
     AutoExitTrial = false,
     ExitWave = nil,
     ExitTeleporter = nil,
+    RaidExitWave = nil,
+    RaidExitTeleporter = nil,
 }
+
+local TrialExitCFrames = {
+    ["1"] = CFrame.new(-262.804382, 227.19606, -1350.01404, 0.75449419, 0.00975042395, -0.656234324, -0.0157980528, 0.999869704, -0.00330733415, 0.656116545, 0.0128625883, 0.754549921),
+    ["2"] = CFrame.new(3165.7561, 735.077393, -1979.80457, 0.986240864, -0.0174288731, 0.164393485, 0.0157761928, 0.999811113, 0.0113535831, -0.164560318, -0.00860386435, 0.986329496),
+    ["3"] = CFrame.new(1597.96582, 22.1188068, 1354.3385, -0.928686857, -0.000283597503, 0.37086466, 0.000792211387, 0.999995887, 0.00274847588, -0.370863944, 0.00284627685, -0.928682804),
+    ["4"] = CFrame.new(-1517.20801, 145.202469, 3283.22534, 0.0618816614, 0, 0.998083591, 0, 1, 0, -0.998083591, 0, 0.0618816614),
+}
+
+local TrialJoinCFrame = CFrame.new(1842.82227, 415.041351, -2411.81909, 0.992613852, 0, -0.121316783, 0, 1, 0, 0.121316783, 0, 0.992613852)
+
+local function TeleportPlayerToCFrame(cframe)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.CFrame = cframe
+        return true
+    end
+
+    warn("[Teleport] No se encontró HumanoidRootPart para teletransportar")
+    return false
+end
+
+local function GetTrialJoinPart()
+    local targetPos = Vector3.new(1842.82227, 415.041351, -2411.81909)
+    for _, descendant in ipairs(Workspace:GetDescendants()) do
+        if descendant:IsA("BasePart") and (descendant.Position - targetPos).Magnitude < 2 then
+            print("[Trial Join Debug] Posible join part encontrado: " .. descendant:GetFullName())
+            return descendant
+        end
+    end
+    return nil
+end
+
+local function TeleportToTrialJoin()
+    local joinPart = GetTrialJoinPart()
+    if joinPart then
+        print("[Trial Join Debug] Teletransportando al part de unión a trial")
+        return TeleportPlayerToCFrame(joinPart.CFrame)
+    end
+
+    print("[Trial Join Debug] No se encontró el join part, usando CFrame fijo de unión a trial")
+    return TeleportPlayerToCFrame(TrialJoinCFrame)
+end
 
 local function GetMaps()
     local list = {}
@@ -53,29 +100,19 @@ local function GetEnemies(mapName)
 end
 
 local function GetTeleporterOptions()
-    local list = {}
-    local worlds = Workspace:FindFirstChild("Worlds")
-    if not worlds then return list end
-
-    for _, worldName in ipairs({"1", "2", "3", "4"}) do
-        local world = worlds:FindFirstChild(worldName)
-        local teleporter = world and world:FindFirstChild("Teleporter")
-        if teleporter then
-            table.insert(list, worldName)
-        end
-    end
-
-    return list
+    return {"1", "2", "3", "4"}
 end
 
-local function GetSelectedTeleporterPart()
+local function GetSelectedTeleporterPart(selectedWorld)
     local worlds = Workspace:FindFirstChild("Worlds")
-    local selectedWorld = State.ExitTeleporter
     if not worlds or not selectedWorld then return nil end
 
     local world = worlds:FindFirstChild(selectedWorld)
     local teleporter = world and world:FindFirstChild("Teleporter")
-    if not teleporter then return nil end
+    if not teleporter then
+        warn("[Trial Exit] No se encontró Teleporter en Worlds[" .. tostring(selectedWorld) .. "]")
+        return nil
+    end
 
     if teleporter:IsA("BasePart") then
         local attr = teleporter:GetAttribute("TeleportTo")
@@ -84,30 +121,84 @@ local function GetSelectedTeleporterPart()
             local prefix = expectedWorld .. "/"
             if string.sub(attr, 1, #prefix) ~= prefix then
                 warn("[Trial Exit] Teleporter TeleportTo no coincide con el mundo seleccionado: " .. tostring(attr))
-                return nil
             end
         end
+        print("[Trial Exit Debug] Teleporter directo encontrado: " .. teleporter.Name .. " en Worlds[" .. tostring(selectedWorld) .. "]")
         return teleporter
     end
 
-    local teleporterPart = teleporter:FindFirstChildWhichIsA("BasePart")
+    local teleporterPart = teleporter:FindFirstChildWhichIsA("BasePart", true)
     if teleporterPart then
         local attr = teleporterPart:GetAttribute("TeleportTo")
         if typeof(attr) == "string" then
             local expectedWorld = tostring(selectedWorld)
             local prefix = expectedWorld .. "/"
             if string.sub(attr, 1, #prefix) ~= prefix then
-                warn("[Trial Exit] Teleporter TeleportTo no coincide con el mundo seleccionado: " .. tostring(attr))
-                return nil
+                warn("[Trial Exit] Teleporter Part TeleportTo no coincide con el mundo seleccionado: " .. tostring(attr))
             end
         end
+        print("[Trial Exit Debug] Teleporter part encontrado: " .. teleporterPart.Name .. " en Worlds[" .. tostring(selectedWorld) .. "]")
         return teleporterPart
+    end
+
+    warn("[Trial Exit] No se encontró ningún BasePart dentro de Teleporter en Worlds[" .. tostring(selectedWorld) .. "]")
+    return nil
+end
+
+local function NormalizeWaveValue(value)
+    local text = tostring(value or "")
+    local digits = text:match("(%d+)")
+    return digits or text
+end
+
+local function NormalizeRoomNumber(value)
+    local normalized = NormalizeWaveValue(value)
+    return tonumber(normalized)
+end
+
+local function GetCurrentTrialRoom()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local trial = gui and gui:FindFirstChild("TrialGui")
+    local main = trial and trial:FindFirstChild("Main")
+    local room = main and main:FindFirstChild("Room")
+    if not room then return nil end
+
+    if room:IsA("TextLabel") or room:IsA("TextBox") then
+        local currentRoom = NormalizeWaveValue(room.Text)
+        print("[Trial Exit Debug] Room actual leída: " .. tostring(room.Text) .. " -> " .. tostring(currentRoom))
+        return currentRoom
     end
 
     return nil
 end
 
-local function GetCurrentTrialWave()
+local function GetTrialLeaveButton()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local trial = gui and gui:FindFirstChild("TrialGui")
+    local main = trial and trial:FindFirstChild("Main")
+    local leave = main and main:FindFirstChild("Leave")
+
+    if leave and leave:IsA("ImageButton") then
+        return leave
+    end
+
+    return nil
+end
+
+local function GetRaidLeaveButton()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local raid = gui and gui:FindFirstChild("RaidGui")
+    local main = raid and raid:FindFirstChild("Main")
+    local leave = main and main:FindFirstChild("Leave")
+
+    if leave and leave:IsA("ImageButton") then
+        return leave
+    end
+
+    return nil
+end
+
+local function GetCurrentRaidWave()
     local gui = LocalPlayer:FindFirstChild("PlayerGui")
     local raid = gui and gui:FindFirstChild("RaidGui")
     local main = raid and raid:FindFirstChild("Main")
@@ -115,35 +206,160 @@ local function GetCurrentTrialWave()
     if not wave then return nil end
 
     if wave:IsA("TextLabel") or wave:IsA("TextBox") then
-        return wave.Text
+        local currentWave = NormalizeWaveValue(wave.Text)
+        print("[Raid Exit Debug] Wave actual leída: " .. tostring(wave.Text) .. " -> " .. tostring(currentWave))
+        return currentWave
     end
 
     return nil
 end
 
+local function GetTrialExitCFrame()
+    local selectedWorld = State.ExitTeleporter
+    if not selectedWorld then
+        return nil
+    end
+    return TrialExitCFrames[tostring(selectedWorld)]
+end
+
 local function CheckTrialExit()
-    local currentWave = GetCurrentTrialWave()
-    if not currentWave then
-        warn("[Trial Exit] No se encontró PlayerGui.RaidGui.Main.Wave")
-        return
+    local currentRoom = GetCurrentTrialRoom()
+    if not currentRoom then
+        warn("[Trial Exit] No se encontró PlayerGui.TrialGui.Main.Room")
+        return false
     end
 
-    if not State.ExitWave or tostring(currentWave) ~= tostring(State.ExitWave) then
-        warn("[Trial Exit] Wave actual: " .. tostring(currentWave) .. ", buscando: " .. tostring(State.ExitWave))
-        return
+    if not State.ExitWave then
+        warn("[Trial Exit] No se configuró la room de salida")
+        return false
     end
 
-    local targetPart = GetSelectedTeleporterPart()
+    local desiredRoom = NormalizeWaveValue(State.ExitWave)
+    local currentRoomNumber = NormalizeRoomNumber(currentRoom)
+    local desiredRoomNumber = NormalizeRoomNumber(State.ExitWave)
+
+    if currentRoomNumber and desiredRoomNumber then
+        if currentRoomNumber < desiredRoomNumber then
+            warn("[Trial Exit] Room actual: " .. tostring(currentRoomNumber) .. ", buscando: " .. tostring(desiredRoomNumber))
+            return false
+        end
+    elseif currentRoom ~= desiredRoom then
+        warn("[Trial Exit] Room actual: " .. tostring(currentRoom) .. ", buscando: " .. tostring(desiredRoom))
+        return false
+    end
+
+    local exitCFrame = GetTrialExitCFrame()
+    if exitCFrame then
+        print("[Trial Exit Debug] Usando CFrame directo para Worlds[" .. tostring(State.ExitTeleporter) .. "]")
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.CFrame = exitCFrame
+            return true
+        end
+
+        warn("[Trial Exit] No se encontró HumanoidRootPart para teletransportar")
+        return false
+    end
+    if exitCFrame then
+        print("[Trial Exit Debug] Usando CFrame directo para Worlds[" .. tostring(State.ExitTeleporter) .. "]")
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.CFrame = exitCFrame
+            return true
+        end
+
+        warn("[Trial Exit] No se encontró HumanoidRootPart para teletransportar")
+        return false
+    end
+
+    local targetPart = GetSelectedTeleporterPart(State.ExitTeleporter)
     if not targetPart then
         warn("[Trial Exit] No se encontró el teleporter seleccionado")
-        return
+        return false
     end
 
+    print("[Trial Exit Debug] Teleportando a part: " .. tostring(targetPart:GetFullName()))
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if hrp then
         hrp.CFrame = targetPart.CFrame * CFrame.new(0, 0, 3)
+        return true
     end
+
+    warn("[Trial Exit] No se encontró HumanoidRootPart para teletransportar")
+    return false
+end
+
+local function GetRaidExitCFrame()
+    local selectedWorld = State.RaidExitTeleporter
+    if not selectedWorld then
+        return nil
+    end
+    return TrialExitCFrames[tostring(selectedWorld)]
+end
+
+local function CheckRaidExit()
+    local currentWave = GetCurrentRaidWave()
+    if not currentWave then
+        warn("[Raid Exit] No se encontró PlayerGui.RaidGui.Main.Wave")
+        return false
+    end
+
+    if not State.RaidExitWave then
+        warn("[Raid Exit] No se configuró la wave de salida")
+        return false
+    end
+
+    local desiredWave = NormalizeWaveValue(State.RaidExitWave)
+    local currentWaveNumber = NormalizeRoomNumber(currentWave)
+    local desiredWaveNumber = NormalizeRoomNumber(State.RaidExitWave)
+
+    if currentWaveNumber and desiredWaveNumber then
+        if currentWaveNumber < desiredWaveNumber then
+            warn("[Raid Exit] Wave actual: " .. tostring(currentWaveNumber) .. ", buscando: " .. tostring(desiredWaveNumber))
+            return false
+        end
+    elseif currentWave ~= desiredWave then
+        warn("[Raid Exit] Wave actual: " .. tostring(currentWave) .. ", buscando: " .. tostring(desiredWave))
+        return false
+    end
+
+    local exitCFrame = GetRaidExitCFrame()
+    print("[Raid Exit Debug] Estado interno: RaidExitTeleporter=" .. tostring(State.RaidExitTeleporter) .. ", CFrame encontrado=" .. tostring(exitCFrame ~= nil))
+    if exitCFrame then
+        print("[Raid Exit Debug] Usando CFrame directo para Worlds[" .. tostring(State.RaidExitTeleporter) .. "]")
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            print("[Raid Exit Debug] HumanoidRootPart encontrado, teletransportando...")
+            hrp.CFrame = exitCFrame
+            return true
+        end
+
+        warn("[Raid Exit] No se encontró HumanoidRootPart para teletransportar")
+        return false
+    else
+        warn("[Raid Exit] No se encontró CFrame para el teleporter seleccionado: " .. tostring(State.RaidExitTeleporter))
+    end
+
+    local targetPart = GetSelectedTeleporterPart(State.RaidExitTeleporter)
+    if not targetPart then
+        warn("[Raid Exit] No se encontró el teleporter seleccionado")
+        return false
+    end
+
+    print("[Raid Exit Debug] Teleportando a part: " .. tostring(targetPart:GetFullName()))
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.CFrame = targetPart.CFrame * CFrame.new(0, 0, 3)
+        return true
+    end
+
+    warn("[Raid Exit] No se encontró HumanoidRootPart para teletransportar")
+    return false
 end
 
 local function IsEnemyGone(enemy)
@@ -181,7 +397,26 @@ local function GetAliveEnemies()
     return list
 end
 
+local function GetRaidAliveEnemies()
+    local list = {}
+    local raidArenas = Workspace:FindFirstChild("RaidArenas")
+    local world = raidArenas and raidArenas:FindFirstChild("World1")
+    local folder = world and world:FindFirstChild("Enemies")
+    if not folder then return list end
+
+    for _, enemy in ipairs(folder:GetChildren()) do
+        if enemy:IsA("Model") and enemy:FindFirstChild("HumanoidRootPart") then
+            local isDead = enemy:GetAttribute("EnemyDead")
+            if isDead ~= true then
+                table.insert(list, enemy)
+            end
+        end
+    end
+    return list
+end
+
 local FarmToken = 0
+local RaidFarmToken = 0
 
 local function TeleportToEnemy(enemy)
     local char = LocalPlayer.Character
@@ -218,32 +453,47 @@ local function RunAutoFarm()
     end)
 end
 
+local function RunRaidAutoFarm()
+    RaidFarmToken += 1
+    local myToken = RaidFarmToken
+
+    task.spawn(function()
+        while State.RaidAutoFarm and myToken == RaidFarmToken do
+            local enemies = GetRaidAliveEnemies()
+            if #enemies == 0 then
+                task.wait(0.5)
+                continue
+            end
+
+            for _, enemy in ipairs(enemies) do
+                if not State.RaidAutoFarm or myToken ~= RaidFarmToken then break end
+
+                while State.RaidAutoFarm and myToken == RaidFarmToken and not IsEnemyFinished(enemy) do
+                    TeleportToEnemy(enemy)
+                    task.wait(0.05)
+                end
+
+                task.wait(0.2)
+            end
+        end
+    end)
+end
+
 local BestPowerRunning = false
 local AutoJoinTrialToken = 0
 local LastTrialJoinKey = nil
 local AutoExitTrialToken = 0
 local LastTrialExitKey = nil
+local AutoExitRaidToken = 0
+local LastRaidExitKey = nil
+local DoujutsuToken = 0
+local HakiToken = 0
+local FamilyToken = 0
+local RacesToken = 0
 
 local function JoinTrial()
-    local args = {
-        [1] = {
-            [1] = {
-                ["BridgeTuplePayload"] = true,
-                ["Payload"] = {
-                    [1] = "Join",
-                    [2] = "Easy",
-                    ["n"] = 2,
-                },
-            },
-            [2] = "\160",
-        },
-    }
-
-    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
-    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
-    if remote and typeof(remote.FireServer) == "function" then
-        remote:FireServer(unpack(args))
-    end
+    print("[Trial Join] Usando teletransporte directo al part de unión")
+    TeleportToTrialJoin()
 end
 
 local function StartAutoJoinTrialLoop()
@@ -278,14 +528,56 @@ local function StartAutoExitTrialLoop()
     task.spawn(function()
         while State.AutoExitTrial and token == AutoExitTrialToken do
             if State.ExitWave and State.ExitTeleporter then
-                local currentWave = GetCurrentTrialWave()
-                if currentWave and tostring(currentWave) == tostring(State.ExitWave) then
-                    local key = string.format("%s-%s", tostring(currentWave), tostring(State.ExitTeleporter))
-                    if key ~= LastTrialExitKey then
-                        LastTrialExitKey = key
-                        CheckTrialExit()
+                local currentRoom = GetCurrentTrialRoom()
+                local desiredRoom = NormalizeWaveValue(State.ExitWave)
+                local currentRoomNumber = NormalizeRoomNumber(currentRoom)
+                local desiredRoomNumber = NormalizeRoomNumber(State.ExitWave)
+                print("[Trial Exit Debug] Room actual: " .. tostring(currentRoom) .. " (" .. tostring(currentRoomNumber) .. "), room deseada: " .. tostring(desiredRoom) .. " (" .. tostring(desiredRoomNumber) .. ")")
+                if currentRoom and ((currentRoomNumber and desiredRoomNumber and currentRoomNumber >= desiredRoomNumber) or currentRoom == desiredRoom) then
+                    if CheckTrialExit() then
+                        warn("[Trial Exit] Salida ejecutada en room " .. tostring(currentRoom))
+                        State.AutoExitTrial = false
+                        break
                     end
                 end
+            end
+            task.wait(2)
+        end
+    end)
+end
+
+local function StopRaidAutoFarm()
+    if State.RaidAutoFarm then
+        State.RaidAutoFarm = false
+        RaidFarmToken += 1
+        print("[Raid Exit Debug] Deteniendo AutoFarm Raid antes de salir")
+        task.wait(0.1)
+    end
+end
+
+local function StartAutoExitRaidLoop()
+    AutoExitRaidToken += 1
+    local token = AutoExitRaidToken
+
+    task.spawn(function()
+        while State.AutoExitRaid and token == AutoExitRaidToken do
+            if State.RaidExitWave and State.RaidExitTeleporter then
+                local currentWave = GetCurrentRaidWave()
+                local desiredWave = NormalizeWaveValue(State.RaidExitWave)
+                local currentWaveNumber = NormalizeRoomNumber(currentWave)
+                local desiredWaveNumber = NormalizeRoomNumber(State.RaidExitWave)
+                print("[Raid Exit Debug] Estado: wave deseada=" .. tostring(State.RaidExitWave) .. ", teleporter=" .. tostring(State.RaidExitTeleporter))
+                print("[Raid Exit Debug] Wave actual: " .. tostring(currentWave) .. " (" .. tostring(currentWaveNumber) .. "), wave deseada: " .. tostring(desiredWave) .. " (" .. tostring(desiredWaveNumber) .. ")")
+                if currentWave and ((currentWaveNumber and desiredWaveNumber and currentWaveNumber >= desiredWaveNumber) or currentWave == desiredWave) then
+                    StopRaidAutoFarm()
+                    if CheckRaidExit() then
+                        warn("[Raid Exit] Salida ejecutada en wave " .. tostring(currentWave))
+                        State.AutoExitRaid = false
+                        break
+                    end
+                end
+            else
+                print("[Raid Exit Debug] Falta configurar RaidExitWave o RaidExitTeleporter")
             end
             task.wait(2)
         end
@@ -351,8 +643,8 @@ Tab:CreateToggle({
 local TrialTab = Window:CreateTab("Trial", "clock")
 
 TrialTab:CreateInput({
-    Name = "Wave para Salir Trial",
-    PlaceholderText = "Ej: 10",
+    Name = "Room para Salir Trial",
+    PlaceholderText = "Ej: 16",
     Text = "",
     Callback = function(Value)
         State.ExitWave = Value
@@ -361,7 +653,7 @@ TrialTab:CreateInput({
 
 local TeleporterDropdown = TrialTab:CreateDropdown({
     Name = "Mapa para Salir Trial",
-    Options = GetTeleporterOptions(),
+    Options = {"1", "2", "3", "4"},
     Callback = function(Option)
         State.ExitTeleporter = Option[1]
     end,
@@ -416,9 +708,8 @@ TrialTab:CreateToggle({
                     -- Buscamos el objetivo más cercano o el primero disponible
                     for _, enemy in pairs(TrialFolder:GetChildren()) do
                         if enemy:FindFirstChild("HumanoidRootPart") then
-                            -- Opcional: Validar que tenga vida real si el juego usa ese atributo en la trial
-                            local health = enemy:GetAttribute("HealthReal")
-                            if health == nil or health > 0 then
+                            local isDead = enemy:GetAttribute("EnemyDead")
+                            if isDead ~= true then
                                 target = enemy
                                 break
                             end
@@ -431,15 +722,11 @@ TrialTab:CreateToggle({
                             hrp.CFrame = target.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
                         end
                         
-                        -- Reducimos el tiempo de chequeo a 0.01 (bucle ultra rápido)
-                        -- El bucle se rompe en el instante exacto en que el NPC muere o desaparece
+                        -- El bucle se rompe en cuanto el NPC tiene EnemyDead = true o desaparece
                         repeat 
-                            task.wait(0.01) 
-                        until not State.TrialEnabled or not target.Parent or not target:FindFirstChild("HumanoidRootPart")
-                        
-                        -- ELIMINAMOS el task.wait(0.1) que estaba aquí para que el TP al siguiente sea inmediato
+                            task.wait(0.01)
+                        until not State.TrialEnabled or not target.Parent or target:GetAttribute("EnemyDead") == true
                     else
-                        -- Si no hay enemigos en la arena, espera un parpadeo para volver a escanear (evita lag)
                         task.wait(0.05)
                     end
                 end
@@ -448,39 +735,236 @@ TrialTab:CreateToggle({
     end,
 })
 
+local RaidTab = Window:CreateTab("Raid", "shield")
+RaidTab:CreateToggle({
+    Name = "AutoFarm Raid",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.RaidAutoFarm = Value
+        if Value then
+            RunRaidAutoFarm()
+        else
+            RaidFarmToken += 1
+        end
+    end,
+})
+
+RaidTab:CreateInput({
+    Name = "Wave para Salir Raid",
+    PlaceholderText = "Ej: 5",
+    Text = "",
+    Callback = function(Value)
+        State.RaidExitWave = Value
+    end,
+})
+
+RaidTab:CreateDropdown({
+    Name = "Mapa para Salir Raid",
+    Options = {"1", "2", "3", "4"},
+    Callback = function(Option)
+        State.RaidExitTeleporter = Option[1]
+    end,
+})
+
+RaidTab:CreateToggle({
+    Name = "Auto Exit Raid",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.AutoExitRaid = Value
+        if Value then
+            StartAutoExitRaidLoop()
+        else
+            AutoExitRaidToken += 1
+        end
+    end,
+})
+
+local GachaTab = Window:CreateTab("Gacha", "gift")
+
+GachaTab:CreateToggle({
+    Name = "Doujutsu",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.Doujutsu = Value
+        if Value then
+            DoujutsuToken += 1
+            local token = DoujutsuToken
+            task.spawn(function()
+                while State.Doujutsu and token == DoujutsuToken do
+                    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
+                    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
+                    local args = {
+                        [1] = {
+                            [1] = "World1",
+                            [2] = "J",
+                        },
+                    }
+                    if remote and typeof(remote.FireServer) == "function" then
+                        remote:FireServer(unpack(args))
+                    else
+                        warn("[Gacha Doujutsu] Remote no encontrado")
+                    end
+                    task.wait(0.3)
+                end
+            end)
+        else
+            DoujutsuToken += 1
+        end
+    end,
+})
+
+GachaTab:CreateToggle({
+    Name = "Races",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.Races = Value
+        if Value then
+            RacesToken += 1
+            local token = RacesToken
+            task.spawn(function()
+                while State.Races and token == RacesToken do
+                    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
+                    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
+                    local args = {
+                        [1] = {
+                            [1] = "World2",
+                            [2] = "J",
+                        },
+                    }
+                    if remote and typeof(remote.FireServer) == "function" then
+                        remote:FireServer(unpack(args))
+                    else
+                        warn("[Gacha Races] Remote no encontrado")
+                    end
+                    task.wait(0.3)
+                end
+            end)
+        else
+            RacesToken += 1
+        end
+    end,
+})
+
+GachaTab:CreateToggle({
+    Name = "Haki",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.Haki = Value
+        if Value then
+            HakiToken += 1
+            local token = HakiToken
+            task.spawn(function()
+                while State.Haki and token == HakiToken do
+                    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
+                    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
+                    local args = {
+                        [1] = {
+                            [1] = "World3",
+                            [2] = "J",
+                        },
+                    }
+                    if remote and typeof(remote.FireServer) == "function" then
+                        remote:FireServer(unpack(args))
+                    else
+                        warn("[Gacha Haki] Remote no encontrado")
+                    end
+                    task.wait(0.3)
+                end
+            end)
+        else
+            HakiToken += 1
+        end
+    end,
+})
+
+GachaTab:CreateToggle({
+    Name = "Family",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.Family = Value
+        if Value then
+            FamilyToken += 1
+            local token = FamilyToken
+            task.spawn(function()
+                while State.Family and token == FamilyToken do
+                    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
+                    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
+                    local args = {
+                        [1] = {
+                            [1] = "World4",
+                            [2] = "J",
+                        },
+                    }
+                    if remote and typeof(remote.FireServer) == "function" then
+                        remote:FireServer(unpack(args))
+                    else
+                        warn("[Gacha Family] Remote no encontrado")
+                    end
+                    task.wait(0.3)
+                end
+            end)
+        else
+            FamilyToken += 1
+        end
+    end,
+})
+
 local OthersTab = Window:CreateTab("Others", "clock")
 
+---------------------------------------------------
+-- 🟡 ANTI AFK + AUTO JUMP
+---------------------------------------------------
 local VirtualUser = game:GetService("VirtualUser")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local Players = game:GetService("Players")
 
-local AutoCornerClick = false
+local LocalPlayer = Players.LocalPlayer
+
+local AntiAFK = true
 
 OthersTab:CreateToggle({
     Name = "Anti AFK",
     CurrentValue = true,
     Callback = function(v)
-        AutoCornerClick = v
+        AntiAFK = v
     end
 })
 
+-- Evita kick AFK clásico
+LocalPlayer.Idled:Connect(function()
+    if AntiAFK then
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end
+end)
+
 task.spawn(function()
     while true do
-        task.wait(20)
+        task.wait(30)
 
-        if not AutoCornerClick then continue end
+        if not AntiAFK then
+            continue
+        end
 
+        local character = LocalPlayer.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+        -- 🔼 Hace salto
+        if humanoid then
+            humanoid.Jump = true
+        end
+
+        -- 🖱️ Click esquina inferior derecha
         local camera = workspace.CurrentCamera
-        if not camera then continue end
+        if camera then
+            local viewport = camera.ViewportSize
 
-        local viewport = camera.ViewportSize
+            local x = viewport.X - 5
+            local y = viewport.Y - 5
 
-        -- 📍 Posición esquina inferior derecha
-        local x = viewport.X - 5
-        local y = viewport.Y - 5
-
-        -- 👇 Simula click
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+        end
     end
 end)
 
