@@ -25,6 +25,7 @@ local State = {
     AutoJoinRaid = false,
     AutoJoinDefense = false,
     AutoDefense = false,
+    RaidAutoFarmPaused = false,
 }
 
 local TrialExitCFrames = {
@@ -112,48 +113,6 @@ local function GetTeleporterOptions()
     return {"1", "2", "3", "4"}
 end
 
-local function GetSelectedTeleporterPart(selectedWorld)
-    local worlds = Workspace:FindFirstChild("Worlds")
-    if not worlds or not selectedWorld then return nil end
-
-    local world = worlds:FindFirstChild(selectedWorld)
-    local teleporter = world and world:FindFirstChild("Teleporter")
-    if not teleporter then
-        warn("[Trial Exit] No se encontró Teleporter en Worlds[" .. tostring(selectedWorld) .. "]")
-        return nil
-    end
-
-    if teleporter:IsA("BasePart") then
-        local attr = teleporter:GetAttribute("TeleportTo")
-        if typeof(attr) == "string" then
-            local expectedWorld = tostring(selectedWorld)
-            local prefix = expectedWorld .. "/"
-            if string.sub(attr, 1, #prefix) ~= prefix then
-                warn("[Trial Exit] Teleporter TeleportTo no coincide con el mundo seleccionado: " .. tostring(attr))
-            end
-        end
-        print("[Trial Exit Debug] Teleporter directo encontrado: " .. teleporter.Name .. " en Worlds[" .. tostring(selectedWorld) .. "]")
-        return teleporter
-    end
-
-    local teleporterPart = teleporter:FindFirstChildWhichIsA("BasePart", true)
-    if teleporterPart then
-        local attr = teleporterPart:GetAttribute("TeleportTo")
-        if typeof(attr) == "string" then
-            local expectedWorld = tostring(selectedWorld)
-            local prefix = expectedWorld .. "/"
-            if string.sub(attr, 1, #prefix) ~= prefix then
-                warn("[Trial Exit] Teleporter Part TeleportTo no coincide con el mundo seleccionado: " .. tostring(attr))
-            end
-        end
-        print("[Trial Exit Debug] Teleporter part encontrado: " .. teleporterPart.Name .. " en Worlds[" .. tostring(selectedWorld) .. "]")
-        return teleporterPart
-    end
-
-    warn("[Trial Exit] No se encontró ningún BasePart dentro de Teleporter en Worlds[" .. tostring(selectedWorld) .. "]")
-    return nil
-end
-
 local function NormalizeWaveValue(value)
     local text = tostring(value or "")
     local digits = text:match("(%d+)")
@@ -165,23 +124,39 @@ local function NormalizeRoomNumber(value)
     return tonumber(normalized)
 end
 
-local function GetCurrentTrialRoom()
+local function IsRaidGuiActive()
     local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    local trial = gui and gui:FindFirstChild("TrialGui")
-    local main = trial and trial:FindFirstChild("Main")
-    local room = main and main:FindFirstChild("Room")
-    if not room then return nil end
-
-    if room:IsA("TextLabel") or room:IsA("TextBox") then
-        local currentRoom = NormalizeWaveValue(room.Text)
-        print("[Trial Exit Debug] Room actual leída: " .. tostring(room.Text) .. " -> " .. tostring(currentRoom))
-        return currentRoom
+    local raidGui = gui and gui:FindFirstChild("RaidGui")
+    if not raidGui then
+        return false
     end
 
-    return nil
+    if raidGui.Enabled == true then
+        return true
+    end
+    if typeof(raidGui.GetAttribute) == "function" and raidGui:GetAttribute("Enabled") == true then
+        return true
+    end
+
+    local data = raidGui:FindFirstChild("Data")
+    if data then
+        local enabledChild = data:FindFirstChild("Enabled")
+        if enabledChild and enabledChild:IsA("BoolValue") and enabledChild.Value == true then
+            return true
+        end
+        if typeof(data.GetAttribute) == "function" and data:GetAttribute("Enabled") == true then
+            return true
+        end
+    end
+
+    return false
 end
 
 local function GetCurrentRaidWave()
+    if not IsRaidGuiActive() then
+        return nil
+    end
+
     local gui = LocalPlayer:FindFirstChild("PlayerGui")
     local raid = gui and gui:FindFirstChild("RaidGui")
     local main = raid and raid:FindFirstChild("Main")
@@ -339,81 +314,101 @@ local function IsRaidGuiActive()
     return false
 end
 
-local function TryStartRaidWithGui()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    if IsRaidGuiActive() then
-        print("[Raid Join] RaidGui ya está activo, se omite el intento de unión")
+local function GetBridgeRemote()
+    local bridge = ReplicatedStorage:WaitForChild("BridgeNet2")
+    local remote = bridge and bridge:WaitForChild("dataRemoteEvent")
+    if remote and typeof(remote.FireServer) == "function" then
+        return remote
+    end
+    warn("[Bridge] dataRemoteEvent no encontrado")
+    return nil
+end
+
+local function FireWorldTeleport(worldId)
+    local remote = GetBridgeRemote()
+    if not remote then
         return false
     end
 
-    local windows = gui and gui:FindFirstChild("Windows")
-    local raidTemplate = windows and windows:FindFirstChild("RaidTemplate")
+    local worldNum = tonumber(worldId) or worldId
+    local args = {
+        {
+            [1] = worldNum,
+            [2] = "\135"
+        }
+    }
 
-    if not raidTemplate then
-        warn("[Raid Join] No se encontró RaidTemplate")
-        return false
-    end
-
-    -- Hacer visible
-    raidTemplate.Visible = true
-    print("[Raid Join Debug] RaidTemplate hecho visible")
-    task.wait(0.3)
-
-    -- Buscar el botón Start
-    local main = raidTemplate:FindFirstChild("Main")
-    local actions = main and main:FindFirstChild("Actions")
-    local startButton = actions and actions:FindFirstChild("Start")
-    if not startButton then
-        startButton = actions and actions:FindFirstChildWhichIsA("GuiButton", true)
-    end
-
-    if startButton and startButton:IsA("GuiObject") then
-        local absPos = startButton.AbsolutePosition
-        local absSize = startButton.AbsoluteSize
-        local centerPos = Vector2.new(absPos.X + absSize.X / 0.90, absPos.Y + absSize.Y / 0.9)
-        print("[Raid Join Debug] Botón Start encontrado, Name:", startButton.Name, "ClassName:", startButton.ClassName, "AbsolutePosition:", absPos, "Size:", absSize, "ClickCenter:", centerPos)
-
-        pcall(function()
-            if typeof(startButton.Activate) == "function" then
-                startButton:Activate()
-            end
-        end)
-
-        SimulateGuiClick(startButton, absPos)
-
-        local activated = false
-        local startTime = os.clock()
-        local timeout = 2
-        repeat
-            if IsRaidGuiActive() then
-                activated = true
-                break
-            end
-            task.wait(0.15)
-        until (os.clock() - startTime) > timeout
-
-        if activated then
-            print("[Raid Join] RaidGui activado tras click Start")
-        else
-            warn("[Raid Join] No se detectó activación de RaidGui tras click Start (timeout)")
-        end
-    else
-        warn("[Raid Join] No se encontró Players.LocalPlayer.PlayerGui.Windows.RaidTemplate.Main.Actions.Start")
-    end
-
-    -- Ocultar de nuevo
-    task.wait(0.2)
-    raidTemplate.Visible = false
-    print("[Raid Join Debug] RaidTemplate ocultado")
+    remote:FireServer(unpack(args))
     return true
 end
 
-local function GetTrialExitCFrame()
-    local selectedWorld = State.ExitTeleporter
-    if not selectedWorld then
+local function GetPlayerVisibilityContext()
+    if typeof(LocalPlayer.GetAttribute) == "function" then
+        local attr = LocalPlayer:GetAttribute("VisibilityContext")
+        if type(attr) == "string" and attr ~= "" then
+            return attr
+        end
+    end
+
+    local contextValue = LocalPlayer:FindFirstChild("VisibilityContext")
+    if contextValue and type(contextValue.Value) == "string" and contextValue.Value ~= "" then
+        return contextValue.Value
+    end
+
+    return nil
+end
+
+local function GetCurrentVisibilityGamemode()
+    local context = GetPlayerVisibilityContext()
+    if type(context) ~= "string" or context == "" then
         return nil
     end
-    return TrialExitCFrames[tostring(selectedWorld)]
+
+    if string.match(context, "^Trial") or string.find(context, "Trial") or string.find(context, "TimeTrial") then
+        return "Trial"
+    end
+    if string.match(context, "^Defense") or string.find(context, "Defense") then
+        return "Defense"
+    end
+    if string.match(context, "^Raid") or string.find(context, "Raid") then
+        return "Raid"
+    end
+
+    return nil
+end
+
+local function IsTrialPriorityActive()
+    return State.AutoJoinTrial or State.AutoExitTrial or State.TrialEnabled
+end
+
+local function CanRunGamemode(mode)
+    local activeMode = GetCurrentVisibilityGamemode()
+
+    if activeMode == "Trial" then
+        return mode == "Trial"
+    end
+
+    if mode == "Defense" then
+        if IsTrialPriorityActive() then
+            return false
+        end
+        return State.AutoJoinDefense or State.AutoDefense
+    end
+
+    if mode == "Raid" then
+        if IsTrialPriorityActive() then
+            return false
+        end
+        if activeMode == "Defense" then
+            return false
+        end
+        if State.AutoJoinDefense or State.AutoDefense then
+            return false
+        end
+        return State.AutoJoinRaid or State.RaidAutoFarm
+    end
+
+    return true
 end
 
 local function CheckTrialExit()
@@ -442,106 +437,12 @@ local function CheckTrialExit()
         return false
     end
 
-    local exitCFrame = GetTrialExitCFrame()
-    if exitCFrame then
-        print("[Trial Exit Debug] Usando CFrame directo para Worlds[" .. tostring(State.ExitTeleporter) .. "]")
-        local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            hrp.CFrame = exitCFrame
-            return true
-        end
-
-        warn("[Trial Exit] No se encontró HumanoidRootPart para teletransportar")
-        return false
-    end
-
-    local targetPart = GetSelectedTeleporterPart(State.ExitTeleporter)
-    if not targetPart then
-        warn("[Trial Exit] No se encontró el teleporter seleccionado")
-        return false
-    end
-
-    print("[Trial Exit Debug] Teleportando a part: " .. tostring(targetPart:GetFullName()))
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        hrp.CFrame = targetPart.CFrame * CFrame.new(0, 0, 3)
+    if FireWorldTeleport(State.ExitTeleporter) then
+        print("[Trial Exit Debug] Teleportando por remote event a Worlds[" .. tostring(State.ExitTeleporter) .. "]")
         return true
     end
 
-    warn("[Trial Exit] No se encontró HumanoidRootPart para teletransportar")
-    return false
-end
-
-local function GetRaidExitCFrame()
-    local selectedWorld = State.RaidExitTeleporter
-    if not selectedWorld then
-        return nil
-    end
-    return TrialExitCFrames[tostring(selectedWorld)]
-end
-
-local function CheckRaidExit()
-    local currentWave = GetCurrentRaidWave()
-    if not currentWave then
-        warn("[Raid Exit] No se encontró PlayerGui.RaidGui.Main.Wave")
-        return false
-    end
-
-    if not State.RaidExitWave then
-        warn("[Raid Exit] No se configuró la wave de salida")
-        return false
-    end
-
-    local desiredWave = NormalizeWaveValue(State.RaidExitWave)
-    local currentWaveNumber = NormalizeRoomNumber(currentWave)
-    local desiredWaveNumber = NormalizeRoomNumber(State.RaidExitWave)
-
-    if currentWaveNumber and desiredWaveNumber then
-        if currentWaveNumber < desiredWaveNumber then
-            warn("[Raid Exit] Wave actual: " .. tostring(currentWaveNumber) .. ", buscando: " .. tostring(desiredWaveNumber))
-            return false
-        end
-    elseif currentWave ~= desiredWave then
-        warn("[Raid Exit] Wave actual: " .. tostring(currentWave) .. ", buscando: " .. tostring(desiredWave))
-        return false
-    end
-
-    local exitCFrame = GetRaidExitCFrame()
-    print("[Raid Exit Debug] Estado interno: RaidExitTeleporter=" .. tostring(State.RaidExitTeleporter) .. ", CFrame encontrado=" .. tostring(exitCFrame ~= nil))
-    if exitCFrame then
-        print("[Raid Exit Debug] Usando CFrame directo para Worlds[" .. tostring(State.RaidExitTeleporter) .. "]")
-        TryLeaveRaidWithGui()
-        local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            print("[Raid Exit Debug] HumanoidRootPart encontrado, teletransportando...")
-            hrp.CFrame = exitCFrame
-            return true
-        end
-
-        warn("[Raid Exit] No se encontró HumanoidRootPart para teletransportar")
-        return false
-    else
-        warn("[Raid Exit] No se encontró CFrame para el teleporter seleccionado: " .. tostring(State.RaidExitTeleporter))
-    end
-
-    local targetPart = GetSelectedTeleporterPart(State.RaidExitTeleporter)
-    if not targetPart then
-        warn("[Raid Exit] No se encontró el teleporter seleccionado")
-        return false
-    end
-
-    print("[Raid Exit Debug] Teleportando a part: " .. tostring(targetPart:GetFullName()))
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        hrp.CFrame = targetPart.CFrame * CFrame.new(0, 0, 3)
-        return true
-    end
-
-    warn("[Raid Exit] No se encontró HumanoidRootPart para teletransportar")
+    warn("[Trial Exit] No se pudo teleportar por remote event a Worlds[" .. tostring(State.ExitTeleporter) .. "]")
     return false
 end
 
@@ -586,26 +487,7 @@ local function GetAliveEnemies()
     return list
 end
 
-local function GetRaidAliveEnemies()
-    local list = {}
-    local raidArenas = Workspace:FindFirstChild("RaidArenas")
-    local world = raidArenas and raidArenas:FindFirstChild("World1")
-    local folder = world and world:FindFirstChild("Enemies")
-    if not folder then return list end
-
-    for _, enemy in ipairs(folder:GetChildren()) do
-        if enemy:IsA("Model") and enemy:FindFirstChild("HumanoidRootPart") then
-            local isDead = enemy:GetAttribute("EnemyDead")
-            if isDead ~= true then
-                table.insert(list, enemy)
-            end
-        end
-    end
-    return list
-end
-
 local FarmToken = 0
-local RaidFarmToken = 0
 
 local function TeleportToEnemy(enemy)
     local char = LocalPlayer.Character
@@ -642,38 +524,11 @@ local function RunAutoFarm()
     end)
 end
 
-local function RunRaidAutoFarm()
-    RaidFarmToken += 1
-    local myToken = RaidFarmToken
-
-    task.spawn(function()
-        while State.RaidAutoFarm and myToken == RaidFarmToken do
-            local enemies = GetRaidAliveEnemies()
-            if #enemies == 0 then
-                task.wait(0.5)
-                continue
-            end
-
-            for _, enemy in ipairs(enemies) do
-                if not State.RaidAutoFarm or myToken ~= RaidFarmToken then break end
-
-                while State.RaidAutoFarm and myToken == RaidFarmToken and not IsEnemyFinished(enemy) do
-                    TeleportToEnemy(enemy)
-                    task.wait(0.05)
-                end
-
-                task.wait(0.2)
-            end
-        end
-    end)
-end
-
 local BestPowerRunning = false
 local AutoJoinTrialToken = 0
 local LastTrialJoinKey = nil
 local AutoExitTrialToken = 0
 local LastTrialExitKey = nil
-local AutoExitRaidToken = 0
 local LastRaidExitKey = nil
 local DoujutsuToken = 0
 local HakiToken = 0
@@ -681,8 +536,10 @@ local FamilyToken = 0
 local RacesToken = 0
 local SwordsToken = 0
 local StarsToken = 0
-local AutoJoinRaidToken = 0
 local AutoJoinDefenseToken = 0
+local AutoJoinRaidToken = 0
+local RaidFarmToken = 0
+local AutoExitRaidToken = 0
 local AutoDefenseToken = 0
 
 local function JoinTrial()
@@ -713,19 +570,6 @@ local function StartAutoJoinTrialLoop()
             end
 
             task.wait(1)
-        end
-    end)
-end
-
-local function StartAutoJoinRaidLoop()
-    AutoJoinRaidToken += 1
-    local token = AutoJoinRaidToken
-
-    task.spawn(function()
-        while State.AutoJoinRaid and token == AutoJoinRaidToken do
-            print("[Raid Join Debug] Intentando unirse a raid automáticamente...")
-            TryStartRaidWithGui()
-            task.wait(5)
         end
     end)
 end
@@ -874,10 +718,15 @@ local function StartAutoJoinDefenseLoop()
         end
 
         while State.AutoJoinDefense and token == AutoJoinDefenseToken do
-                local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-                local dg = playerGui and playerGui:FindFirstChild("DefenseGui")
-                local isActive = false
-                if dg then
+            if not CanRunGamemode("Defense") then
+                task.wait(1)
+                continue
+            end
+
+            local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+            local dg = playerGui and playerGui:FindFirstChild("DefenseGui")
+            local isActive = false
+            if dg then
                     -- Revisar propiedad ScreenGui.Enabled
                     if dg.Enabled == true then
                         isActive = true
@@ -907,11 +756,235 @@ local function StartAutoJoinDefenseLoop()
             if not isActive then
                 print("[Defense] DefenseGui no activo, intentando JoinDefense...")
                 pcall(TryJoinDefense)
+
+                local activeMode = GetCurrentVisibilityGamemode()
+                if activeMode == nil then
+                    local remote = GetBridgeRemote()
+                    if remote then
+                        local argsNormal = {
+                            {
+                                {
+                                    BridgeTuplePayload = true,
+                                    Payload = {
+                                        "Create",
+                                        "World4",
+                                        n = 2,
+                                    },
+                                },
+                                "&",
+                            },
+                        }
+                        local argsWith = {
+                            {
+                                {
+                                    __BridgeTuplePayload__ = true,
+                                    Payload = {
+                                        "Create",
+                                        "World4",
+                                        n = 2,
+                                    },
+                                },
+                                "&",
+                            },
+                        }
+                        remote:FireServer(unpack(argsNormal))
+                        remote:FireServer(unpack(argsWith))
+                        print("[Defense] Enviadas peticiones Create a World4 (BridgeTuplePayload y __BridgeTuplePayload__)")
+                    end
+                else
+                    print("[Defense] Ya en modo " .. tostring(activeMode) .. ", omitiendo Create")
+                end
             else
                 print("[Defense] DefenseGui activo (Data.Enabled=true), omitiendo join")
             end
 
             task.wait(3)
+        end
+    end)
+end
+
+local function GetRaidEnemies()
+    local list = {}
+    local raidArenas = Workspace:FindFirstChild("RaidArenas")
+    local world1 = raidArenas and raidArenas:FindFirstChild("World1")
+    local folder = world1 and world1:FindFirstChild("Enemies")
+    if not folder then
+        return list
+    end
+
+    for _, enemy in ipairs(folder:GetChildren()) do
+        if enemy:IsA("Model") and enemy:FindFirstChild("HumanoidRootPart") then
+            local isDead = enemy:GetAttribute("EnemyDead")
+            if isDead ~= true then
+                table.insert(list, enemy)
+            end
+        end
+    end
+
+    return list
+end
+
+local function StartAutoJoinRaidLoop()
+    AutoJoinRaidToken += 1
+    local token = AutoJoinRaidToken
+
+    task.spawn(function()
+        while State.AutoJoinRaid and token == AutoJoinRaidToken do
+            if not CanRunGamemode("Raid") then
+                task.wait(1)
+                continue
+            end
+
+            local activeMode = GetCurrentVisibilityGamemode()
+            if activeMode == nil then
+                print("[Raid Join] Jugador fuera de un modo, esperando 8s antes de enviar Create")
+                task.wait(8)
+                if not State.AutoJoinRaid or token ~= AutoJoinRaidToken then
+                    break
+                end
+
+                if GetCurrentVisibilityGamemode() == nil then
+                    local remote = GetBridgeRemote()
+                    if remote then
+                        local argsNormal = {
+                            {
+                                {
+                                    BridgeTuplePayload = true,
+                                    Payload = {
+                                        "Create",
+                                        "World1",
+                                        n = 2,
+                                    },
+                                },
+                                "y",
+                            },
+                        }
+                        local argsWith = {
+                            {
+                                {
+                                    __BridgeTuplePayload__ = true,
+                                    Payload = {
+                                        "Create",
+                                        "World1",
+                                        n = 2,
+                                    },
+                                },
+                                "y",
+                            },
+                        }
+                        remote:FireServer(unpack(argsNormal))
+                        remote:FireServer(unpack(argsWith))
+                        print("[Raid Join] Enviadas peticiones Create a World1 (BridgeTuplePayload y __BridgeTuplePayload__)")
+                    end
+                else
+                    print("[Raid Join] Ya no está afuera tras la espera, omitiendo envío")
+                end
+            else
+                print("[Raid Join] Ya en modo " .. tostring(activeMode) .. ", esperando...")
+            end
+
+            task.wait(4)
+        end
+    end)
+end
+
+local function RunAutoRaidFarm()
+    RaidFarmToken += 1
+    local token = RaidFarmToken
+
+    task.spawn(function()
+        while State.RaidAutoFarm and token == RaidFarmToken do
+            if State.RaidAutoFarmPaused or not CanRunGamemode("Raid") then
+                task.wait(0.5)
+                continue
+            end
+
+            local enemies = GetRaidEnemies()
+            if #enemies == 0 then
+                task.wait(0.5)
+                continue
+            end
+
+            print("[Raid Farm] Enemigos detectados")
+            task.wait(0.3)
+
+            if not State.RaidAutoFarm or token ~= RaidFarmToken or State.RaidAutoFarmPaused or not CanRunGamemode("Raid") then
+                continue
+            end
+
+            for _, enemy in ipairs(enemies) do
+                if not State.RaidAutoFarm or token ~= RaidFarmToken or State.RaidAutoFarmPaused or not CanRunGamemode("Raid") then
+                    break
+                end
+
+                local char = LocalPlayer.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                local targetHRP = enemy:FindFirstChild("HumanoidRootPart")
+                if hrp and targetHRP then
+                    hrp.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 3)
+                end
+                task.wait(0.3)
+            end
+
+            task.wait(0.2)
+        end
+    end)
+end
+
+local function StartAutoExitRaidLoop()
+    AutoExitRaidToken += 1
+    local token = AutoExitRaidToken
+
+    task.spawn(function()
+        while State.AutoExitRaid and token == AutoExitRaidToken do
+            if GetCurrentVisibilityGamemode() ~= "Raid" then
+                task.wait(1)
+                continue
+            end
+
+            if not State.RaidExitWave or not State.RaidExitTeleporter then
+                task.wait(1)
+                continue
+            end
+
+            local currentWave = GetCurrentRaidWave()
+            if not currentWave then
+                task.wait(1)
+                continue
+            end
+
+            local desiredWave = NormalizeWaveValue(State.RaidExitWave)
+            local currentWaveNumber = NormalizeRoomNumber(currentWave)
+            local desiredWaveNumber = NormalizeRoomNumber(desiredWave)
+
+            if (currentWaveNumber and desiredWaveNumber and currentWaveNumber >= desiredWaveNumber) or currentWave == desiredWave then
+                if State.RaidAutoFarm then
+                    State.RaidAutoFarmPaused = true
+                    print("[Raid Exit] Pausando AutoFarm Raid antes de salir")
+                    task.wait(0.5)
+                end
+
+                local chosenWorld = tonumber(State.RaidExitTeleporter) or State.RaidExitTeleporter
+                local intermediateWorld = chosenWorld == 1 and 2 or 1
+
+                if FireWorldTeleport(intermediateWorld) then
+                    print("[Raid Exit] Teleportando primero a World" .. tostring(intermediateWorld) .. " (salida intermedia)")
+                    task.wait(1)
+                else
+                    warn("[Raid Exit] Falló el teletransporte intermedio a World" .. tostring(intermediateWorld))
+                end
+
+                if FireWorldTeleport(State.RaidExitTeleporter) then
+                    print("[Raid Exit] Salida enviada al teletransportador World" .. tostring(State.RaidExitTeleporter))
+                else
+                    warn("[Raid Exit] Falló el teletransporte final a World" .. tostring(State.RaidExitTeleporter))
+                end
+
+                task.wait(2)
+                State.RaidAutoFarmPaused = false
+            end
+
+            task.wait(2)
         end
     end)
 end
@@ -943,6 +1016,11 @@ local function RunAutoDefense()
 
     task.spawn(function()
         while State.AutoDefense and token == AutoDefenseToken do
+            if not CanRunGamemode("Defense") then
+                task.wait(0.5)
+                continue
+            end
+
             local enemies = GetDefenseEnemies()
             if #enemies == 0 then
                 task.wait(0.5)
@@ -950,7 +1028,7 @@ local function RunAutoDefense()
             end
 
             for _, enemy in ipairs(enemies) do
-                if not State.AutoDefense or token ~= AutoDefenseToken then
+                if not State.AutoDefense or token ~= AutoDefenseToken or not CanRunGamemode("Defense") then
                     break
                 end
 
@@ -997,44 +1075,6 @@ local function StartAutoExitTrialLoop()
                         break
                     end
                 end
-            end
-            task.wait(2)
-        end
-    end)
-end
-
-local function StopRaidAutoFarm()
-    if State.RaidAutoFarm then
-        State.RaidAutoFarm = false
-        RaidFarmToken += 1
-        print("[Raid Exit Debug] Deteniendo AutoFarm Raid antes de salir")
-        task.wait(0.1)
-    end
-end
-
-local function StartAutoExitRaidLoop()
-    AutoExitRaidToken += 1
-    local token = AutoExitRaidToken
-
-    task.spawn(function()
-        while State.AutoExitRaid and token == AutoExitRaidToken do
-            if State.RaidExitWave and State.RaidExitTeleporter then
-                local currentWave = GetCurrentRaidWave()
-                local desiredWave = NormalizeWaveValue(State.RaidExitWave)
-                local currentWaveNumber = NormalizeRoomNumber(currentWave)
-                local desiredWaveNumber = NormalizeRoomNumber(State.RaidExitWave)
-                print("[Raid Exit Debug] Estado: wave deseada=" .. tostring(State.RaidExitWave) .. ", teleporter=" .. tostring(State.RaidExitTeleporter))
-                print("[Raid Exit Debug] Wave actual: " .. tostring(currentWave) .. " (" .. tostring(currentWaveNumber) .. "), wave deseada: " .. tostring(desiredWave) .. " (" .. tostring(desiredWaveNumber) .. ")")
-                if currentWave and ((currentWaveNumber and desiredWaveNumber and currentWaveNumber >= desiredWaveNumber) or currentWave == desiredWave) then
-                    StopRaidAutoFarm()
-                    if CheckRaidExit() then
-                        warn("[Raid Exit] Salida ejecutada en wave " .. tostring(currentWave))
-                        State.AutoExitRaid = false
-                        break
-                    end
-                end
-            else
-                print("[Raid Exit Debug] Falta configurar RaidExitWave o RaidExitTeleporter")
             end
             task.wait(2)
         end
@@ -1289,30 +1329,14 @@ RaidTab:CreateToggle({
     CurrentValue = false,
     Callback = function(Value)
         State.RaidAutoFarm = Value
-        
         if Value then
-            -- 🛡️ SEGURIDAD: Si está activado el farm común, lo pausamos para la Raid
-            if State.AutofarmEnabled then
-                print("[Raid] Pausando AutoFarm normal para evitar conflicto de TP")
-            end
-            
-            RaidFarmToken += 1
-            task.spawn(function()
-                print("🤖 BUCLE AUTO-FARM RAID ACTIVADO")
-                
-                while State.RaidAutoFarm do
-                    local ok, err = pcall(RunRaidAutoFarm)
-                    if not ok then
-                        print("[Raid Farm Error]:", err)
-                    end
-                    
-                    task.wait(0.5) 
-                end
-                
-                print("🛑 BUCLE AUTO-FARM RAID DETENIDO")
-            end)
+            State.RaidAutoFarmPaused = false
+            RunAutoRaidFarm()
+            print("[Raid] AutoFarm Raid activado")
         else
             RaidFarmToken += 1
+            State.RaidAutoFarmPaused = false
+            print("[Raid] AutoFarm Raid desactivado")
         end
     end,
 })
@@ -1324,8 +1348,10 @@ RaidTab:CreateToggle({
         State.AutoJoinRaid = Value
         if Value then
             StartAutoJoinRaidLoop()
+            print("[Raid] Auto Join Raid activado")
         else
             AutoJoinRaidToken += 1
+            print("[Raid] Auto Join Raid desactivado")
         end
     end,
 })
@@ -1354,8 +1380,10 @@ RaidTab:CreateToggle({
         State.AutoExitRaid = Value
         if Value then
             StartAutoExitRaidLoop()
+            print("[Raid] Auto Exit Raid activado (sistema de prioridad activo)")
         else
             AutoExitRaidToken += 1
+            print("[Raid] Auto Exit Raid desactivado")
         end
     end,
 })
