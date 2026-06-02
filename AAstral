@@ -14,6 +14,7 @@ local State = {
     AutoJoinTrial = false,
     TrialEnabled = false,
     AutoExitTrial = false,
+    TrialSavedCFrame = nil,
     ExitWave = nil,
     ExitTeleporter = nil,
     RaidExitWave = nil,
@@ -61,6 +62,37 @@ local function TeleportPlayerToCFrame(cframe)
 
     warn("[Teleport] No se encontró HumanoidRootPart tras esperar " .. tostring(timeout) .. "s")
     return false
+end
+
+local function SaveTrialPosition()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        warn("[Trial] No se encontró HumanoidRootPart para guardar la posición")
+        return false
+    end
+
+    State.TrialSavedCFrame = hrp.CFrame
+    print("[Trial] Posición guardada correctamente")
+    return true
+end
+
+local function TeleportToSavedTrialPositionAfterExit()
+    if not State.TrialSavedCFrame then
+        return
+    end
+
+    local savedCFrame = State.TrialSavedCFrame
+    State.TrialSavedCFrame = nil
+
+    task.delay(7, function()
+        local success = TeleportPlayerToCFrame(savedCFrame)
+        if success then
+            print("[Trial] Teletransportado a la posición guardada después de salir de la trial")
+        else
+            warn("[Trial] No se pudo teletransportar a la posición guardada después de la trial")
+        end
+    end)
 end
 
 local function GetTrialJoinPart()
@@ -366,7 +398,7 @@ local function FireWorldTeleport(worldId)
     local args = {
         {
             [1] = worldNum,
-            [2] = "\135"
+            [2] = "\137"
         }
     }
 
@@ -389,6 +421,8 @@ local function GetPlayerVisibilityContext()
 
     return nil
 end
+
+local PrevTrialActive = false
 
 local function GetCurrentVisibilityGamemode()
     local context = GetPlayerVisibilityContext()
@@ -940,7 +974,7 @@ local function StartAutoJoinRaidLoop()
                                         n = 2,
                                     },
                                 },
-                                "y",
+                                "{",
                             },
                         }
                         local argsWith = {
@@ -953,7 +987,7 @@ local function StartAutoJoinRaidLoop()
                                         n = 2,
                                     },
                                 },
-                                "y",
+                                "{",
                             },
                         }
                         remote:FireServer(unpack(argsNormal))
@@ -1290,6 +1324,7 @@ local function StartAutoExitTrialLoop()
                     task.wait(2)
                     State.TrialAutoFarmPaused = false
                     warn("[Trial Exit] Salida ejecutada en room " .. tostring(currentRoom))
+                    TeleportToSavedTrialPositionAfterExit()
                     State.AutoExitTrial = false
                     break
                 end
@@ -1354,14 +1389,13 @@ local function FireStars()
                     ["n"] = 2,
                 },
             },
-            [2] = "_"
+            [2] = "a"
         }
     }
 
     local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
     local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
     if remote and typeof(remote.FireServer) == "function" then
-        print("[Stars] Enviando stars a " .. tostring(world) .. " con rareza " .. tostring(rarity))
         remote:FireServer(unpack(args))
     else
         warn("[Stars] Remote no encontrado")
@@ -1507,7 +1541,7 @@ TrialTab:CreateToggle({
 
                 -- Si las carpetas aún no cargan (pantalla de carga/cambio de wave), esperamos y continuamos
                 if not TrialFolder then 
-                    print("[AutoFarm Trial] Esperando a que aparezcan los enemigos...")
+                    
                     task.wait(1) 
                     continue 
                 end
@@ -1549,6 +1583,15 @@ TrialTab:CreateToggle({
 
             print("🛑 BUCLE AUTO-FARM TRIAL DETENIDO")
         end)
+    end,
+})
+
+TrialTab:CreateButton({
+    Name = "Guarda Posición",
+    Callback = function()
+        if SaveTrialPosition() then
+            print("[Trial] Posición guardada. Se teleportará después de salir de la trial.")
+        end
     end,
 })
 
@@ -1721,7 +1764,7 @@ GachaTab:CreateToggle({
                     local args = {
                         [1] = {
                             [1] = "World1",
-                            [2] = "J",
+                            [2] = "L",
                         },
                     }
                     if remote and typeof(remote.FireServer) == "function" then
@@ -1753,7 +1796,7 @@ GachaTab:CreateToggle({
                     local args = {
                         [1] = {
                             [1] = "World2",
-                            [2] = "J",
+                            [2] = "L",
                         },
                     }
                     if remote and typeof(remote.FireServer) == "function" then
@@ -1785,7 +1828,7 @@ GachaTab:CreateToggle({
                     local args = {
                         [1] = {
                             [1] = "World3",
-                            [2] = "J",
+                            [2] = "L",
                         },
                     }
                     if remote and typeof(remote.FireServer) == "function" then
@@ -1817,7 +1860,7 @@ GachaTab:CreateToggle({
                     local args = {
                         [1] = {
                             [1] = "World4",
-                            [2] = "J",
+                            [2] = "L",
                         },
                     }
                     if remote and typeof(remote.FireServer) == "function" then
@@ -1849,7 +1892,7 @@ GachaTab:CreateToggle({
                     local args = {
                         [1] = {
                             [1] = "World0",
-                            [2] = "\150"
+                            [2] = "\156"
                         }
                     }
                     if remote and typeof(remote.FireServer) == "function" then
@@ -1960,6 +2003,18 @@ task.spawn(function()
             VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
             VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
         end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        local currentActive = IsTrialGuiActive()
+        if PrevTrialActive and not currentActive and State.TrialSavedCFrame then
+            print("[Trial] Trial finalizada, teletransportando a la posición guardada en 5 segundos...")
+            TeleportToSavedTrialPositionAfterExit()
+        end
+        PrevTrialActive = currentActive
     end
 end)
 
