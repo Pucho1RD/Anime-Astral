@@ -1539,11 +1539,11 @@ TrialTab:CreateToggle({
                                 hrp.CFrame = target.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
                             end
                         end)
-                        task.wait(0.05) 
+                        task.wait(0.7) 
                     until not State.TrialEnabled or not target.Parent or target:GetAttribute("EnemyDead") == true
                 else
                     -- Si la carpeta existe pero no hay enemigos vivos, esperamos un momento el nuevo spawn
-                    task.wait(0.2)
+                    task.wait(2)
                 end
             end
 
@@ -1895,7 +1895,7 @@ StarsTab:CreateToggle({
             task.spawn(function()
                 while State.StarsEnabled and token == StarsToken do
                     FireStars()
-                    task.wait(0.2)
+                    task.wait(0.7)
                 end
             end)
         else
