@@ -26,6 +26,7 @@ local State = {
     AutoJoinDefense = false,
     AutoDefense = false,
     AutoExitDefense = false,
+    DefenseJoinWorld = "4",
     DefenseExitWave = nil,
     RaidAutoFarmPaused = false,
     TrialAutoFarmPaused = false,
@@ -695,6 +696,7 @@ local AutoJoinDefenseToken = 0
 local AutoJoinRaidToken = 0
 local RaidFarmToken = 0
 local AutoExitRaidToken = 0
+local AutoExitDefenseToken = 0
 local AutoDefenseToken = 0
 
 local function JoinTrial()
@@ -768,13 +770,19 @@ local function TryJoinDefense()
         return false
     end
 
+    local selectedWorld = tostring(State.DefenseJoinWorld or "4")
+    if selectedWorld == "" then
+        selectedWorld = "4"
+    end
+    local worldKey = "World" .. selectedWorld
+
     local argsNormal = {
         {
             {
                 BridgeTuplePayload = true,
                 Payload = {
                     "Create",
-                    "World4",
+                    worldKey,
                     n = 2,
                 },
             },
@@ -788,7 +796,7 @@ local function TryJoinDefense()
                 __BridgeTuplePayload__ = true,
                 Payload = {
                     "Create",
-                    "World4",
+                    worldKey,
                     n = 2,
                 },
             },
@@ -798,7 +806,7 @@ local function TryJoinDefense()
 
     remote:FireServer(unpack(argsNormal))
     remote:FireServer(unpack(argsWith))
-    print("[Defense] Enviadas peticiones Create a World4 (BridgeTuplePayload y __BridgeTuplePayload__)")
+    print("[Defense] Enviadas peticiones Create a " .. tostring(worldKey) .. " (BridgeTuplePayload y __BridgeTuplePayload__)")
     return true
 end
 
@@ -852,8 +860,23 @@ local function StartAutoJoinDefenseLoop()
                 end
 
             if not isActive then
-                print("[Defense] DefenseGui no activo, intentando JoinDefense...")
-                pcall(TryJoinDefense)
+                local activeMode = GetCurrentVisibilityGamemode()
+                if activeMode == nil then
+                    print("[Defense] Jugador fuera de modo, esperando 8s antes de enviar Create como Raid")
+                    task.wait(8)
+                    if not State.AutoJoinDefense or token ~= AutoJoinDefenseToken then
+                        continue
+                    end
+
+                    if GetCurrentVisibilityGamemode() == nil then
+                        print("[Defense] Intento de JoinDefense tras espera")
+                        pcall(TryJoinDefense)
+                    else
+                        print("[Defense] Ya entró en un modo tras la espera, omitiendo JoinDefense")
+                    end
+                else
+                    print("[Defense] DefenseGui no activo, pero jugador ya en modo " .. tostring(activeMode) .. ", omitiendo JoinDefense")
+                end
             else
                 print("[Defense] DefenseGui activo (Data.Enabled=true), omitiendo join")
             end
@@ -1592,6 +1615,14 @@ DefenseTab:CreateToggle({
             AutoDefenseToken += 1
             print("[Defense] AutoFarm Defense desactivado")
         end
+    end,
+})
+
+DefenseTab:CreateDropdown({
+    Name = "Mapa para Defense",
+    Options = {"1", "2", "3", "4"},
+    Callback = function(Option)
+        State.DefenseJoinWorld = Option[1]
     end,
 })
 
