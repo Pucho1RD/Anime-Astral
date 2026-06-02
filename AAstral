@@ -28,6 +28,7 @@ local State = {
     AutoExitDefense = false,
     DefenseJoinWorld = "4",
     DefenseExitWave = nil,
+    DefenseExitTeleporter = "1",
     RaidAutoFarmPaused = false,
     TrialAutoFarmPaused = false,
     DefenseAutoFarmPaused = false,
@@ -1093,7 +1094,39 @@ local function GetDefenseEnemies()
     return list
 end
 
+local function IsDefenseGuiActive()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local defenseGui = gui and gui:FindFirstChild("DefenseGui")
+    if not defenseGui then
+        return false
+    end
+
+    if defenseGui.Enabled == true then
+        return true
+    end
+    if typeof(defenseGui.GetAttribute) == "function" and defenseGui:GetAttribute("Enabled") == true then
+        return true
+    end
+
+    local data = defenseGui:FindFirstChild("Data")
+    if data then
+        local enabledChild = data:FindFirstChild("Enabled")
+        if enabledChild and enabledChild:IsA("BoolValue") and enabledChild.Value == true then
+            return true
+        end
+        if typeof(data.GetAttribute) == "function" and data:GetAttribute("Enabled") == true then
+            return true
+        end
+    end
+
+    return false
+end
+
 local function GetCurrentDefenseWave()
+    if not IsDefenseGuiActive() then
+        return nil
+    end
+
     local gui = LocalPlayer:FindFirstChild("PlayerGui")
     local defenseGui = gui and gui:FindFirstChild("DefenseGui")
     local main = defenseGui and defenseGui:FindFirstChild("Main")
@@ -1117,8 +1150,8 @@ local function StartAutoDefenseLoop()
 
     task.spawn(function()
         while State.AutoDefense and token == AutoDefenseToken do
-            if not CanRunGamemode("Defense") then
-                task.wait(1)
+            if State.DefenseAutoFarmPaused or not CanRunGamemode("Defense") then
+                task.wait(0.5)
                 continue
             end
 
@@ -1152,21 +1185,31 @@ end
 local function StartAutoExitDefenseLoop()
     AutoExitDefenseToken += 1
     local token = AutoExitDefenseToken
+    local hasExitedThisDefense = false
 
     task.spawn(function()
         while State.AutoExitDefense and token == AutoExitDefenseToken do
-            if GetCurrentVisibilityGamemode() ~= "Defense" then
+            local activeMode = GetCurrentVisibilityGamemode()
+            if activeMode ~= "Defense" then
+                hasExitedThisDefense = false
                 task.wait(1)
                 continue
             end
 
-            if not State.DefenseExitWave then
+            if not IsDefenseGuiActive() then
+                print("[Defense Exit] DefenseGui no está activo todavía, esperando antes de evaluar la ola")
+                task.wait(1)
+                continue
+            end
+
+            if not State.DefenseExitWave or not State.DefenseExitTeleporter then
                 task.wait(1)
                 continue
             end
 
             local currentWave = GetCurrentDefenseWave()
             if not currentWave then
+                print("[Defense Exit] No se pudo leer la ola actual de Defense, esperando")
                 task.wait(1)
                 continue
             end
@@ -1175,18 +1218,29 @@ local function StartAutoExitDefenseLoop()
             local currentWaveNumber = NormalizeRoomNumber(currentWave)
             local desiredWaveNumber = NormalizeRoomNumber(desiredWave)
 
-            if (currentWaveNumber and desiredWaveNumber and currentWaveNumber >= desiredWaveNumber) or currentWave == desiredWave then
+            if not hasExitedThisDefense and ((currentWaveNumber and desiredWaveNumber and currentWaveNumber >= desiredWaveNumber) or currentWave == desiredWave) then
+                hasExitedThisDefense = true
+
                 if State.AutoDefense then
                     State.DefenseAutoFarmPaused = true
                     print("[Defense Exit] Pausando AutoFarm Defense antes de salir")
                     task.wait(0.5)
                 end
 
-                local exitWorld = 1
-                if FireWorldTeleport(exitWorld) then
-                    print("[Defense Exit] Salida enviada a World" .. tostring(exitWorld))
+                local chosenWorld = tonumber(State.DefenseExitTeleporter) or State.DefenseExitTeleporter
+                local intermediateWorld = chosenWorld == 1 and 2 or 1
+
+                if FireWorldTeleport(intermediateWorld) then
+                    print("[Defense Exit] Teleportando primero a World" .. tostring(intermediateWorld) .. " (salida intermedia)")
+                    task.wait(1)
                 else
-                    warn("[Defense Exit] Falló el teletransporte de salida a World" .. tostring(exitWorld))
+                    warn("[Defense Exit] Falló el teletransporte intermedio a World" .. tostring(intermediateWorld))
+                end
+
+                if FireWorldTeleport(chosenWorld) then
+                    print("[Defense Exit] Salida enviada a World" .. tostring(chosenWorld))
+                else
+                    warn("[Defense Exit] Falló el teletransporte final a World" .. tostring(chosenWorld))
                 end
 
                 task.wait(2)
@@ -1618,20 +1672,20 @@ DefenseTab:CreateToggle({
     end,
 })
 
-DefenseTab:CreateDropdown({
-    Name = "Mapa para Defense",
-    Options = {"1", "2", "3", "4"},
-    Callback = function(Option)
-        State.DefenseJoinWorld = Option[1]
-    end,
-})
-
 DefenseTab:CreateInput({
     Name = "Wave para Salir Defense",
     PlaceholderText = "Ej: 5",
     Text = "",
     Callback = function(Value)
         State.DefenseExitWave = Value
+    end,
+})
+
+DefenseTab:CreateDropdown({
+    Name = "Mapa para Salir Defense",
+    Options = {"1", "2", "3", "4"},
+    Callback = function(Option)
+        State.DefenseExitTeleporter = Option[1]
     end,
 })
 
