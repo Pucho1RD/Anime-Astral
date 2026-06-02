@@ -25,7 +25,13 @@ local State = {
     AutoJoinRaid = false,
     AutoJoinDefense = false,
     AutoDefense = false,
+    AutoExitDefense = false,
+    DefenseExitWave = nil,
     RaidAutoFarmPaused = false,
+    TrialAutoFarmPaused = false,
+    DefenseAutoFarmPaused = false,
+    SelectedLoadout = nil,
+    SelectedBackToWorld = nil,
 }
 
 local TrialExitCFrames = {
@@ -119,6 +125,8 @@ local function NormalizeWaveValue(value)
     return digits or text
 end
 
+local LoadoutOptions = {"Damage", "Power", "Drop", "Xp", "Yen", "Luck"}
+
 local function NormalizeRoomNumber(value)
     local normalized = NormalizeWaveValue(value)
     return tonumber(normalized)
@@ -167,6 +175,56 @@ local function GetCurrentRaidWave()
         local currentWave = NormalizeWaveValue(wave.Text)
         print("[Raid Exit Debug] Wave actual leída: " .. tostring(wave.Text) .. " -> " .. tostring(currentWave))
         return currentWave
+    end
+
+    return nil
+end
+
+local function IsTrialGuiActive()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local trialGui = gui and gui:FindFirstChild("TrialGui")
+    if not trialGui then
+        return false
+    end
+
+    if trialGui.Enabled == true then
+        return true
+    end
+    if typeof(trialGui.GetAttribute) == "function" and trialGui:GetAttribute("Enabled") == true then
+        return true
+    end
+
+    local data = trialGui:FindFirstChild("Data")
+    if data then
+        local enabledChild = data:FindFirstChild("Enabled")
+        if enabledChild and enabledChild:IsA("BoolValue") and enabledChild.Value == true then
+            return true
+        end
+        if typeof(data.GetAttribute) == "function" and data:GetAttribute("Enabled") == true then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function GetCurrentTrialRoom()
+    if not IsTrialGuiActive() then
+        return nil
+    end
+
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local trialGui = gui and gui:FindFirstChild("TrialGui")
+    local main = trialGui and trialGui:FindFirstChild("Main")
+    local room = main and main:FindFirstChild("Room")
+    if not room then
+        return nil
+    end
+
+    if room:IsA("TextLabel") or room:IsA("TextBox") then
+        local currentRoom = NormalizeWaveValue(room.Text)
+        print("[Trial Exit Debug] Room actual leída: " .. tostring(room.Text) .. " -> " .. tostring(currentRoom))
+        return currentRoom
     end
 
     return nil
@@ -286,34 +344,6 @@ local function TryLeaveRaidWithGui()
     return false
 end
 
-local function IsRaidGuiActive()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    local raidGui = gui and gui:FindFirstChild("RaidGui")
-    if not raidGui then
-        return false
-    end
-
-    if raidGui.Enabled == true then
-        return true
-    end
-    if typeof(raidGui.GetAttribute) == "function" and raidGui:GetAttribute("Enabled") == true then
-        return true
-    end
-
-    local data = raidGui:FindFirstChild("Data")
-    if data then
-        local enabledChild = data:FindFirstChild("Enabled")
-        if enabledChild and enabledChild:IsA("BoolValue") and enabledChild.Value == true then
-            return true
-        end
-        if typeof(data.GetAttribute) == "function" and data:GetAttribute("Enabled") == true then
-            return true
-        end
-    end
-
-    return false
-end
-
 local function GetBridgeRemote()
     local bridge = ReplicatedStorage:WaitForChild("BridgeNet2")
     local remote = bridge and bridge:WaitForChild("dataRemoteEvent")
@@ -377,6 +407,119 @@ local function GetCurrentVisibilityGamemode()
     return nil
 end
 
+local function GetCurrentWorldContext()
+    local context = GetPlayerVisibilityContext()
+    if type(context) ~= "string" or context == "" then
+        return nil
+    end
+
+    if string.match(context, "^World:?%d+") then
+        return context
+    end
+
+    return nil
+end
+
+local function SendLoadoutRemote(selection, requireWorldContext)
+    if type(selection) ~= "string" or selection == "" then
+        warn("[Loadout] Selección inválida")
+        return false
+    end
+
+    if requireWorldContext then
+        local worldContext = GetCurrentWorldContext()
+        if not worldContext then
+            warn("[Loadout] BackToWorld solo funciona en World:1, World:2, World:3, World:4")
+            return false
+        end
+    else
+        local gamemode = GetCurrentVisibilityGamemode()
+        if not gamemode then
+            warn("[Loadout] Gamemode Loadout solo funciona dentro de un gamemode")
+            return false
+        end
+    end
+
+    local args = {
+        [1] = {
+            [1] = selection,
+            [2] = "<"
+        }
+    }
+
+    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
+    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
+    if remote and typeof(remote.FireServer) == "function" then
+        remote:FireServer(unpack(args))
+        print("[Loadout] Enviado:", selection, requireWorldContext and "(BackToWorld)" or "(Gamemode Loadout)")
+        return true
+    end
+
+    warn("[Loadout] Remote no encontrado")
+    return false
+end
+
+local LoadoutLoopToken = 0
+local BackToWorldLoopToken = 0
+
+local function StartLoadoutLoop()
+    LoadoutLoopToken += 1
+    local token = LoadoutLoopToken
+    local lastSent = nil
+
+    task.spawn(function()
+        while token == LoadoutLoopToken do
+            local selection = State.SelectedLoadout
+            if selection and selection ~= "" then
+                local mode = GetCurrentVisibilityGamemode()
+                if mode then
+                    local currentKey = "Loadout:" .. mode .. ":" .. selection
+                    if lastSent ~= currentKey then
+                        if SendLoadoutRemote(selection, false) then
+                            lastSent = currentKey
+                        end
+                    end
+                else
+                    lastSent = nil
+                end
+            else
+                lastSent = nil
+            end
+
+            task.wait(1)
+        end
+    end)
+end
+
+local function StartBackToWorldLoop()
+    BackToWorldLoopToken += 1
+    local token = BackToWorldLoopToken
+    local lastSent = nil
+
+    task.spawn(function()
+        while token == BackToWorldLoopToken do
+            local selection = State.SelectedBackToWorld
+            if selection and selection ~= "" then
+                local world = GetCurrentWorldContext()
+                if world then
+                    local currentKey = "BackToWorld:" .. world .. ":" .. selection
+                    if lastSent ~= currentKey then
+                        if SendLoadoutRemote(selection, true) then
+                            lastSent = currentKey
+                        end
+                    end
+                else
+                    lastSent = nil
+                end
+            else
+                lastSent = nil
+            end
+
+            task.wait(1)
+        end
+    end)
+end
+
 local function IsTrialPriorityActive()
     return State.AutoJoinTrial or State.AutoExitTrial or State.TrialEnabled
 end
@@ -390,6 +533,12 @@ local function CanRunGamemode(mode)
 
     if mode == "Defense" then
         if IsTrialPriorityActive() then
+            return false
+        end
+        if activeMode == "Raid" then
+            return false
+        end
+        if State.AutoJoinRaid or State.RaidAutoFarm then
             return false
         end
         return State.AutoJoinDefense or State.AutoDefense
@@ -412,6 +561,11 @@ local function CanRunGamemode(mode)
 end
 
 local function CheckTrialExit()
+    if not IsTrialGuiActive() then
+        warn("[Trial Exit] TrialGui no está activo")
+        return false
+    end
+
     local currentRoom = GetCurrentTrialRoom()
     if not currentRoom then
         warn("[Trial Exit] No se encontró PlayerGui.TrialGui.Main.Room")
@@ -488,6 +642,7 @@ local function GetAliveEnemies()
 end
 
 local FarmToken = 0
+local TrialFarmToken = 0
 
 local function TeleportToEnemy(enemy)
     local char = LocalPlayer.Character
@@ -578,15 +733,12 @@ local function TryJoinDefense()
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
     local defenseGui = playerGui and playerGui:FindFirstChild("DefenseGui")
 
-    -- Comprobar si la GUI de Defense ya está marcada como Enabled (evitar abrir template)
+    -- Comprobar si la GUI de Defense ya está marcada como Enabled (evitar reintentar join)
     if defenseGui then
-        -- Propiedad `.Enabled` en ScreenGui
         if defenseGui.Enabled == true then
             print("[Defense] DefenseGui.Enabled == true, ya activo")
             return false
         end
-
-        -- Atributo 'Enabled' en el propio ScreenGui
         if typeof(defenseGui.GetAttribute) == "function" then
             local dgAttr = defenseGui:GetAttribute("Enabled")
             if dgAttr == true then
@@ -594,8 +746,6 @@ local function TryJoinDefense()
                 return false
             end
         end
-
-        -- Comprobar Data.Enabled dentro de la GUI (puede ser BoolValue o atributo)
         local data = defenseGui:FindFirstChild("Data")
         if data then
             local enabledChild = data:FindFirstChild("Enabled")
@@ -613,94 +763,42 @@ local function TryJoinDefense()
         end
     end
 
-    local windows = playerGui and playerGui:FindFirstChild("Windows")
-    local defTemplate = windows and windows:FindFirstChild("DefenseTemplate")
-    if not defTemplate then
-        warn("[Defense] No se encontró Windows.DefenseTemplate en PlayerGui")
+    local remote = GetBridgeRemote()
+    if not remote then
         return false
     end
 
-    -- Abrir la interfaz, intentar click en el Start y cerrarla rápidamente
-    print("[Defense] DefenseTemplate encontrado, abriendo para enviar click Start")
-    defTemplate.Visible = true
-    task.wait(0.35)
+    local argsNormal = {
+        {
+            {
+                BridgeTuplePayload = true,
+                Payload = {
+                    "Create",
+                    "World4",
+                    n = 2,
+                },
+            },
+            "&",
+        },
+    }
 
-    local main = defTemplate:FindFirstChild("Main")
-    local actions = main and main:FindFirstChild("Actions")
-    local startButton = actions and actions:FindFirstChild("Start", true)
-    if not startButton then
-        startButton = actions and actions:FindFirstChildWhichIsA("GuiButton", true)
-    end
-    local clicked = false
+    local argsWith = {
+        {
+            {
+                __BridgeTuplePayload__ = true,
+                Payload = {
+                    "Create",
+                    "World4",
+                    n = 2,
+                },
+            },
+            "&",
+        },
+    }
 
-    if startButton then
-        local absPos = startButton.AbsolutePosition
-        local absSize = startButton.AbsoluteSize
-        local centerPos = Vector2.new(absPos.X + absSize.X / 2, absPos.Y + absSize.Y / 2)
-        print("[Defense] Start ImageButton encontrado, Name:", startButton.Name, "ClassName:", startButton.ClassName, "AbsolutePosition:", absPos, "Size:", absSize, "ClickCenter:", centerPos)
-        pcall(function()
-            startButton:Activate()
-        end)
-        clicked = true
-
-        -- También intentar click físico por si Activate() no basta
-        if typeof(SimulateGuiClick) == "function" then
-            SimulateGuiClick(startButton, absPos)
-        else
-            VirtualInputManager:SendMouseMoveEvent(centerPos.X, centerPos.Y, game, 0)
-            task.wait(0.03)
-            VirtualInputManager:SendMouseButtonEvent(centerPos.X, centerPos.Y, 0, true, game, 0)
-            task.wait(0.03)
-            VirtualInputManager:SendMouseButtonEvent(centerPos.X, centerPos.Y, 0, false, game, 0)
-        end
-    else
-        warn("[Defense] No se encontró Start ni GuiButton en Actions dentro de DefenseTemplate")
-    end
-
-    if clicked then
-        print("[Defense] Click Start enviado en DefenseTemplate")
-
-        -- Esperar hasta que DefenseGui se marque como activo, con timeout
-        local activated = false
-        local startTime = os.clock()
-        local timeout = 2 -- segundos
-        repeat
-            local dgCheck = playerGui and playerGui:FindFirstChild("DefenseGui")
-            if dgCheck then
-                if dgCheck.Enabled == true then
-                    activated = true
-                    break
-                end
-                if typeof(dgCheck.GetAttribute) == "function" and dgCheck:GetAttribute("Enabled") == true then
-                    activated = true
-                    break
-                end
-                local dataCheck = dgCheck:FindFirstChild("Data")
-                if dataCheck then
-                    local enabledChild = dataCheck:FindFirstChild("Enabled")
-                    if enabledChild and enabledChild:IsA("BoolValue") and enabledChild.Value == true then
-                        activated = true
-                        break
-                    end
-                    if typeof(dataCheck.GetAttribute) == "function" and dataCheck:GetAttribute("Enabled") == true then
-                        activated = true
-                        break
-                    end
-                end
-            end
-            task.wait(0.15)
-        until (os.clock() - startTime) > timeout
-
-        if activated then
-            print("[Defense] DefenseGui activado tras click, cerrando template")
-        else
-            warn("[Defense] Tras el click no se detectó activación de DefenseGui (timeout), cerrando template")
-        end
-    else
-        warn("[Defense] No se pudo simular el click en Start")
-    end
-
-    defTemplate.Visible = false
+    remote:FireServer(unpack(argsNormal))
+    remote:FireServer(unpack(argsWith))
+    print("[Defense] Enviadas peticiones Create a World4 (BridgeTuplePayload y __BridgeTuplePayload__)")
     return true
 end
 
@@ -756,44 +854,6 @@ local function StartAutoJoinDefenseLoop()
             if not isActive then
                 print("[Defense] DefenseGui no activo, intentando JoinDefense...")
                 pcall(TryJoinDefense)
-
-                local activeMode = GetCurrentVisibilityGamemode()
-                if activeMode == nil then
-                    local remote = GetBridgeRemote()
-                    if remote then
-                        local argsNormal = {
-                            {
-                                {
-                                    BridgeTuplePayload = true,
-                                    Payload = {
-                                        "Create",
-                                        "World4",
-                                        n = 2,
-                                    },
-                                },
-                                "&",
-                            },
-                        }
-                        local argsWith = {
-                            {
-                                {
-                                    __BridgeTuplePayload__ = true,
-                                    Payload = {
-                                        "Create",
-                                        "World4",
-                                        n = 2,
-                                    },
-                                },
-                                "&",
-                            },
-                        }
-                        remote:FireServer(unpack(argsNormal))
-                        remote:FireServer(unpack(argsWith))
-                        print("[Defense] Enviadas peticiones Create a World4 (BridgeTuplePayload y __BridgeTuplePayload__)")
-                    end
-                else
-                    print("[Defense] Ya en modo " .. tostring(activeMode) .. ", omitiendo Create")
-                end
             else
                 print("[Defense] DefenseGui activo (Data.Enabled=true), omitiendo join")
             end
@@ -1010,14 +1070,32 @@ local function GetDefenseEnemies()
     return list
 end
 
-local function RunAutoDefense()
+local function GetCurrentDefenseWave()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local defenseGui = gui and gui:FindFirstChild("DefenseGui")
+    local main = defenseGui and defenseGui:FindFirstChild("Main")
+    local wave = main and main:FindFirstChild("Wave")
+    if not wave then
+        return nil
+    end
+
+    if wave:IsA("TextLabel") or wave:IsA("TextBox") then
+        local currentWave = NormalizeWaveValue(wave.Text)
+        print("[Defense Exit Debug] Wave actual leída: " .. tostring(wave.Text) .. " -> " .. tostring(currentWave))
+        return currentWave
+    end
+
+    return nil
+end
+
+local function StartAutoDefenseLoop()
     AutoDefenseToken += 1
     local token = AutoDefenseToken
 
     task.spawn(function()
         while State.AutoDefense and token == AutoDefenseToken do
             if not CanRunGamemode("Defense") then
-                task.wait(0.5)
+                task.wait(1)
                 continue
             end
 
@@ -1032,26 +1110,67 @@ local function RunAutoDefense()
                     break
                 end
 
-                -- Mantener teletransportándose continuamente cerca del NPC mientras se mueve
                 while State.AutoDefense and token == AutoDefenseToken and enemy and enemy.Parent and enemy:GetAttribute("EnemyDead") ~= true do
                     local char = LocalPlayer.Character
                     local hrp = char and char:FindFirstChild("HumanoidRootPart")
                     local targetHRP = enemy and enemy:FindFirstChild("HumanoidRootPart")
-
                     if hrp and targetHRP then
-                        -- Colocar ligeramente detrás del NPC para seguirlo sin superponer
-                        local offset = Vector3.new(0, 0, 3)
-                        local targetPos = targetHRP.Position
-                        -- Añadir pequeña elevación para evitar quedar dentro del suelo
-                        local safePos = targetPos + Vector3.new(0, 2, 0) - (targetHRP.CFrame.LookVector * 2)
-                        hrp.CFrame = CFrame.new(safePos, targetPos)
+                        hrp.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 3)
                     end
-
                     task.wait(0.08)
                 end
 
                 task.wait(0.2)
             end
+        end
+    end)
+end
+
+local function StartAutoExitDefenseLoop()
+    AutoExitDefenseToken += 1
+    local token = AutoExitDefenseToken
+
+    task.spawn(function()
+        while State.AutoExitDefense and token == AutoExitDefenseToken do
+            if GetCurrentVisibilityGamemode() ~= "Defense" then
+                task.wait(1)
+                continue
+            end
+
+            if not State.DefenseExitWave then
+                task.wait(1)
+                continue
+            end
+
+            local currentWave = GetCurrentDefenseWave()
+            if not currentWave then
+                task.wait(1)
+                continue
+            end
+
+            local desiredWave = NormalizeWaveValue(State.DefenseExitWave)
+            local currentWaveNumber = NormalizeRoomNumber(currentWave)
+            local desiredWaveNumber = NormalizeRoomNumber(desiredWave)
+
+            if (currentWaveNumber and desiredWaveNumber and currentWaveNumber >= desiredWaveNumber) or currentWave == desiredWave then
+                if State.AutoDefense then
+                    State.DefenseAutoFarmPaused = true
+                    print("[Defense Exit] Pausando AutoFarm Defense antes de salir")
+                    task.wait(0.5)
+                end
+
+                local exitWorld = 1
+                if FireWorldTeleport(exitWorld) then
+                    print("[Defense Exit] Salida enviada a World" .. tostring(exitWorld))
+                else
+                    warn("[Defense Exit] Falló el teletransporte de salida a World" .. tostring(exitWorld))
+                end
+
+                task.wait(2)
+                State.DefenseAutoFarmPaused = false
+            end
+
+            task.wait(2)
         end
     end)
 end
@@ -1069,11 +1188,33 @@ local function StartAutoExitTrialLoop()
                 local desiredRoomNumber = NormalizeRoomNumber(State.ExitWave)
                 print("[Trial Exit Debug] Room actual: " .. tostring(currentRoom) .. " (" .. tostring(currentRoomNumber) .. "), room deseada: " .. tostring(desiredRoom) .. " (" .. tostring(desiredRoomNumber) .. ")")
                 if currentRoom and ((currentRoomNumber and desiredRoomNumber and currentRoomNumber >= desiredRoomNumber) or currentRoom == desiredRoom) then
-                    if CheckTrialExit() then
-                        warn("[Trial Exit] Salida ejecutada en room " .. tostring(currentRoom))
-                        State.AutoExitTrial = false
-                        break
+                    if State.TrialEnabled then
+                        State.TrialAutoFarmPaused = true
+                        print("[Trial Exit] Pausando AutoFarm Trial antes de salir")
+                        task.wait(0.5)
                     end
+
+                    local chosenWorld = tonumber(State.ExitTeleporter) or State.ExitTeleporter
+                    local intermediateWorld = chosenWorld == 1 and 2 or 1
+
+                    if FireWorldTeleport(intermediateWorld) then
+                        print("[Trial Exit] Teleportando primero a World" .. tostring(intermediateWorld) .. " (salida intermedia)")
+                        task.wait(1)
+                    else
+                        warn("[Trial Exit] Falló el teletransporte intermedio a World" .. tostring(intermediateWorld))
+                    end
+
+                    if FireWorldTeleport(State.ExitTeleporter) then
+                        print("[Trial Exit] Salida enviada al teletransportador World" .. tostring(State.ExitTeleporter))
+                    else
+                        warn("[Trial Exit] Falló el teletransporte final a World" .. tostring(State.ExitTeleporter))
+                    end
+
+                    task.wait(2)
+                    State.TrialAutoFarmPaused = false
+                    warn("[Trial Exit] Salida ejecutada en room " .. tostring(currentRoom))
+                    State.AutoExitTrial = false
+                    break
                 end
             end
             task.wait(2)
@@ -1263,62 +1404,98 @@ TrialTab:CreateToggle({
     CurrentValue = false,
     Callback = function(Value)
         State.TrialEnabled = Value
-        
-        if Value then
-            task.spawn(function()
-                print("⚔️ BUCLE AUTO-FARM TRIAL REPETITIVO ACTIVADO")
-                
-                while State.TrialEnabled do
-                    -- Buscamos las carpetas DENTRO del bucle en cada vuelta
-                    local arenas = Workspace:FindFirstChild("TimeTrialArenas")
-                    local easyArena = arenas and arenas:FindFirstChild("Easy")
-                    local TrialFolder = easyArena and easyArena:FindFirstChild("Enemies")
-                    
-                    -- Si las carpetas aún no cargan (pantalla de carga/cambio de wave), esperamos y continuamos
-                    if not TrialFolder then 
-                        print("[AutoFarm Trial] Esperando a que aparezcan los enemigos...")
-                        task.wait(1) 
-                        continue 
-                    end
-                    
-                    local target = nil
-                    
-                    -- Buscamos el objetivo válido
-                    for _, enemy in pairs(TrialFolder:GetChildren()) do
-                        if enemy:FindFirstChild("HumanoidRootPart") then
-                            local isDead = enemy:GetAttribute("EnemyDead")
-                            if isDead ~= true then
-                                target = enemy
-                                break
-                            end
+        if not Value then
+            TrialFarmToken += 1
+            State.TrialAutoFarmPaused = false
+            return
+        end
+
+        TrialFarmToken += 1
+        local token = TrialFarmToken
+        State.TrialAutoFarmPaused = false
+
+        task.spawn(function()
+            print("⚔️ BUCLE AUTO-FARM TRIAL REPETITIVO ACTIVADO")
+
+            while State.TrialEnabled and token == TrialFarmToken do
+                if State.TrialAutoFarmPaused then
+                    task.wait(0.5)
+                    continue
+                end
+
+                -- Buscamos las carpetas DENTRO del bucle en cada vuelta
+                local arenas = Workspace:FindFirstChild("TimeTrialArenas")
+                local easyArena = arenas and arenas:FindFirstChild("Easy")
+                local TrialFolder = easyArena and easyArena:FindFirstChild("Enemies")
+
+                -- Si las carpetas aún no cargan (pantalla de carga/cambio de wave), esperamos y continuamos
+                if not TrialFolder then 
+                    print("[AutoFarm Trial] Esperando a que aparezcan los enemigos...")
+                    task.wait(1) 
+                    continue 
+                end
+
+                local target = nil
+
+                -- Buscamos el objetivo válido
+                for _, enemy in pairs(TrialFolder:GetChildren()) do
+                    if enemy:FindFirstChild("HumanoidRootPart") then
+                        local isDead = enemy:GetAttribute("EnemyDead")
+                        if isDead ~= true then
+                            target = enemy
+                            break
                         end
-                    end
-                    
-                    if target and target:FindFirstChild("HumanoidRootPart") then
-                        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                        if hrp then
-                            -- Teletransporte a la espalda del enemigo
-                            hrp.CFrame = target.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
-                        end
-                        
-                        -- Nos quedamos pegados al enemigo de forma segura
-                        repeat 
-                            pcall(function()
-                                if State.TrialEnabled and hrp and target:FindFirstChild("HumanoidRootPart") then
-                                    hrp.CFrame = target.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
-                                end
-                            end) -- <--- ¡AQUÍ ESTABA EL ERROR! Ya está corregido a 'end)'
-                            task.wait(0.05) 
-                        until not State.TrialEnabled or not target.Parent or target:GetAttribute("EnemyDead") == true
-                    else
-                        -- Si la carpeta existe pero no hay enemigos vivos, esperamos un momento el nuevo spawn
-                        task.wait(0.2)
                     end
                 end
-                
-                print("🛑 BUCLE AUTO-FARM TRIAL DETENIDO")
-            end)
-        end
+
+                if target and target:FindFirstChild("HumanoidRootPart") then
+                    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        -- Teletransporte a la espalda del enemigo
+                        hrp.CFrame = target.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+                    end
+
+                    -- Nos quedamos pegados al enemigo de forma segura
+                    repeat 
+                        pcall(function()
+                            if State.TrialEnabled and hrp and target:FindFirstChild("HumanoidRootPart") then
+                                hrp.CFrame = target.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+                            end
+                        end)
+                        task.wait(0.05) 
+                    until not State.TrialEnabled or not target.Parent or target:GetAttribute("EnemyDead") == true
+                else
+                    -- Si la carpeta existe pero no hay enemigos vivos, esperamos un momento el nuevo spawn
+                    task.wait(0.2)
+                end
+            end
+
+            print("🛑 BUCLE AUTO-FARM TRIAL DETENIDO")
+        end)
+    end,
+})
+
+local LoadoutTab = Window:CreateTab("Loadout", "briefcase")
+
+LoadoutTab:CreateDropdown({
+    Name = "Gamemode Loadout",
+    Options = LoadoutOptions,
+    Callback = function(Option)
+        local selection = (type(Option) == "table" and Option[1]) or Option
+        State.SelectedLoadout = selection
+        SendLoadoutRemote(selection, false)
+        StartLoadoutLoop()
+    end,
+})
+
+LoadoutTab:CreateDropdown({
+    Name = "BackToWorld",
+    Options = LoadoutOptions,
+    Callback = function(Option)
+        local selection = (type(Option) == "table" and Option[1]) or Option
+        State.SelectedBackToWorld = selection
+        SendLoadoutRemote(selection, true)
+        StartBackToWorldLoop()
     end,
 })
 
@@ -1404,25 +1581,40 @@ DefenseTab:CreateToggle({
 })
 
 DefenseTab:CreateToggle({
-    Name = "Auto Defense",
+    Name = "AutoFarm Defense",
     CurrentValue = false,
     Callback = function(Value)
         State.AutoDefense = Value
-        
         if Value then
-            task.spawn(function()
-                print("🛡️ BUCLE AUTO-DEFENSE ACTIVADO")
-                
-                while State.AutoDefense do
-                    -- Ejecuta tu función de defensa de forma segura
-                    -- Nota: Asegúrate de que el nombre exacto de tu función sea RunAutoDefense
-                    pcall(RunAutoDefense) 
-                    
-                    task.wait(1) -- Espera 1 segundo antes de reintentar
-                end
-                
-                print("🛑 BUCLE AUTO-DEFENSE DETENIDO")
-            end)
+            StartAutoDefenseLoop()
+            print("[Defense] AutoFarm Defense activado")
+        else
+            AutoDefenseToken += 1
+            print("[Defense] AutoFarm Defense desactivado")
+        end
+    end,
+})
+
+DefenseTab:CreateInput({
+    Name = "Wave para Salir Defense",
+    PlaceholderText = "Ej: 5",
+    Text = "",
+    Callback = function(Value)
+        State.DefenseExitWave = Value
+    end,
+})
+
+DefenseTab:CreateToggle({
+    Name = "Auto Exit Defense",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.AutoExitDefense = Value
+        if Value then
+            StartAutoExitDefenseLoop()
+            print("[Defense] Auto Exit Defense activado (sistema de prioridad activo)")
+        else
+            AutoExitDefenseToken += 1
+            print("[Defense] Auto Exit Defense desactivado")
         end
     end,
 })
