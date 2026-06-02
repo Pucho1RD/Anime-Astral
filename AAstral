@@ -23,6 +23,8 @@ local State = {
     StarsEnabled = false,
     Swords = false,
     AutoJoinRaid = false,
+    AutoJoinDefense = false,
+    AutoDefense = false,
 }
 
 local TrialExitCFrames = {
@@ -195,8 +197,8 @@ local function GetCurrentRaidWave()
     return nil
 end
 
-local function SimulateGuiClick(guiObject)
-    if not guiObject or not guiObject:IsA("GuiObject") then
+local function SimulateGuiClick(guiObject, useAbsolutePosition)
+    if not guiObject or not guiObject:IsA("GuiButton") then
         return false
     end
 
@@ -206,11 +208,88 @@ local function SimulateGuiClick(guiObject)
         return false
     end
 
+    print("[SimulateGuiClick] Posición esquina:", absPos.X, absPos.Y)
+    print("[SimulateGuiClick] Tamaño:", absSize.X, absSize.Y)
+
+    -- 🛠️ CONTROL DE BAJADA (OFFSET EN PÍXELES)
+    -- Ajusta este valor si necesitas que baje más (ej: 40, 50, etc.)
+    local offsetY = 36
+
+    -- Cambiamos las multiplicaciones por el cálculo del centro real más el ajuste vertical
     local x = absPos.X + absSize.X / 2
-    local y = absPos.Y + absSize.Y / 2 + 5
-    print("[Raid Exit Debug] Simulando click en GUI en pantalla: " .. tostring(x) .. ", " .. tostring(y))
-    VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-    VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+    local y = absPos.Y + absSize.Y / 2 + offsetY
+
+    if useAbsolutePosition and ((typeof(useAbsolutePosition) == "Vector2") or type(useAbsolutePosition) == "table") and useAbsolutePosition.X and useAbsolutePosition.Y then
+        x = useAbsolutePosition.X + absSize.X / 2
+        y = useAbsolutePosition.Y + absSize.Y / 2 + offsetY
+    end
+
+    local camera = workspace.CurrentCamera
+    local viewport = (camera and camera.ViewportSize) or Vector2.new(1920, 1080)
+    if type(math.clamp) == "function" then
+        x = math.clamp(x, 1, viewport.X - 1)
+        y = math.clamp(y, 1, viewport.Y - 1)
+    else
+        if x < 1 then x = 1 elseif x > viewport.X - 1 then x = viewport.X - 1 end
+        if y < 1 then y = 1 elseif y > viewport.Y - 1 then y = viewport.Y - 1 end
+    end
+
+    print("[SimulateGuiClick] Intentando click físico modificado abajo:", x, y, "viewport:", viewport)
+    pcall(function()
+        print(">>> ENVIANDO MOVIMIENTO DE MOUSE A:", x, y)
+        VirtualInputManager:SendMouseMoveEvent(x, y, game, 0)
+        task.wait(0.03)
+        print(">>> ENVIANDO MOUSE DOWN")
+        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+        task.wait(0.03)
+        print(">>> ENVIANDO MOUSE UP - CLICK COMPLETADO")
+        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+    end)
+
+    local function tryFireSignal()
+        if type(firesignal) == "function" then
+            return pcall(firesignal, guiObject.MouseButton1Click)
+        end
+        return false
+    end
+
+    local function tryGetConnections()
+        if type(getconnections) == "function" then
+            local conns = getconnections(guiObject.MouseButton1Click)
+            if type(conns) == "table" then
+                for _, conn in ipairs(conns) do
+                    if type(conn.Function) == "function" then
+                        local ok = pcall(conn.Function, guiObject)
+                        if ok then
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+        return false
+    end
+
+    local function tryGuiService()
+        local GuiService = game:GetService("GuiService")
+        if GuiService and typeof(GuiService.SelectedObject) ~= "nil" then
+            return pcall(function()
+                GuiService.SelectedObject = guiObject
+            end)
+        end
+        return false
+    end
+
+    if tryFireSignal() then
+        return true
+    end
+    if tryGetConnections() then
+        return true
+    end
+    if tryGuiService() then
+        return true
+    end
+
     return true
 end
 
@@ -232,11 +311,44 @@ local function TryLeaveRaidWithGui()
     return false
 end
 
+local function IsRaidGuiActive()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local raidGui = gui and gui:FindFirstChild("RaidGui")
+    if not raidGui then
+        return false
+    end
+
+    if raidGui.Enabled == true then
+        return true
+    end
+    if typeof(raidGui.GetAttribute) == "function" and raidGui:GetAttribute("Enabled") == true then
+        return true
+    end
+
+    local data = raidGui:FindFirstChild("Data")
+    if data then
+        local enabledChild = data:FindFirstChild("Enabled")
+        if enabledChild and enabledChild:IsA("BoolValue") and enabledChild.Value == true then
+            return true
+        end
+        if typeof(data.GetAttribute) == "function" and data:GetAttribute("Enabled") == true then
+            return true
+        end
+    end
+
+    return false
+end
+
 local function TryStartRaidWithGui()
     local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    if IsRaidGuiActive() then
+        print("[Raid Join] RaidGui ya está activo, se omite el intento de unión")
+        return false
+    end
+
     local windows = gui and gui:FindFirstChild("Windows")
     local raidTemplate = windows and windows:FindFirstChild("RaidTemplate")
-    
+
     if not raidTemplate then
         warn("[Raid Join] No se encontró RaidTemplate")
         return false
@@ -251,11 +363,39 @@ local function TryStartRaidWithGui()
     local main = raidTemplate:FindFirstChild("Main")
     local actions = main and main:FindFirstChild("Actions")
     local startButton = actions and actions:FindFirstChild("Start")
+    if not startButton then
+        startButton = actions and actions:FindFirstChildWhichIsA("GuiButton", true)
+    end
 
     if startButton and startButton:IsA("GuiObject") then
-        print("[Raid Join Debug] Botón Start encontrado, simulando click...")
-        if SimulateGuiClick(startButton) then
-            task.wait(0.5)
+        local absPos = startButton.AbsolutePosition
+        local absSize = startButton.AbsoluteSize
+        local centerPos = Vector2.new(absPos.X + absSize.X / 0.90, absPos.Y + absSize.Y / 0.9)
+        print("[Raid Join Debug] Botón Start encontrado, Name:", startButton.Name, "ClassName:", startButton.ClassName, "AbsolutePosition:", absPos, "Size:", absSize, "ClickCenter:", centerPos)
+
+        pcall(function()
+            if typeof(startButton.Activate) == "function" then
+                startButton:Activate()
+            end
+        end)
+
+        SimulateGuiClick(startButton, absPos)
+
+        local activated = false
+        local startTime = os.clock()
+        local timeout = 2
+        repeat
+            if IsRaidGuiActive() then
+                activated = true
+                break
+            end
+            task.wait(0.15)
+        until (os.clock() - startTime) > timeout
+
+        if activated then
+            print("[Raid Join] RaidGui activado tras click Start")
+        else
+            warn("[Raid Join] No se detectó activación de RaidGui tras click Start (timeout)")
         end
     else
         warn("[Raid Join] No se encontró Players.LocalPlayer.PlayerGui.Windows.RaidTemplate.Main.Actions.Start")
@@ -542,6 +682,8 @@ local RacesToken = 0
 local SwordsToken = 0
 local StarsToken = 0
 local AutoJoinRaidToken = 0
+local AutoJoinDefenseToken = 0
+local AutoDefenseToken = 0
 
 local function JoinTrial()
     print("[Trial Join] Usando teletransporte directo al part de unión")
@@ -584,6 +726,254 @@ local function StartAutoJoinRaidLoop()
             print("[Raid Join Debug] Intentando unirse a raid automáticamente...")
             TryStartRaidWithGui()
             task.wait(5)
+        end
+    end)
+end
+
+local function TryJoinDefense()
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    local defenseGui = playerGui and playerGui:FindFirstChild("DefenseGui")
+
+    -- Comprobar si la GUI de Defense ya está marcada como Enabled (evitar abrir template)
+    if defenseGui then
+        -- Propiedad `.Enabled` en ScreenGui
+        if defenseGui.Enabled == true then
+            print("[Defense] DefenseGui.Enabled == true, ya activo")
+            return false
+        end
+
+        -- Atributo 'Enabled' en el propio ScreenGui
+        if typeof(defenseGui.GetAttribute) == "function" then
+            local dgAttr = defenseGui:GetAttribute("Enabled")
+            if dgAttr == true then
+                print("[Defense] DefenseGui attribute Enabled == true, ya activo")
+                return false
+            end
+        end
+
+        -- Comprobar Data.Enabled dentro de la GUI (puede ser BoolValue o atributo)
+        local data = defenseGui:FindFirstChild("Data")
+        if data then
+            local enabledChild = data:FindFirstChild("Enabled")
+            if enabledChild and enabledChild:IsA("BoolValue") and enabledChild.Value == true then
+                print("[Defense] DefenseGui.Data.Enabled == true, ya activo")
+                return false
+            end
+            if typeof(data.GetAttribute) == "function" then
+                local attr = data:GetAttribute("Enabled")
+                if attr == true then
+                    print("[Defense] DefenseGui.Data.Enabled attribute == true, ya activo")
+                    return false
+                end
+            end
+        end
+    end
+
+    local windows = playerGui and playerGui:FindFirstChild("Windows")
+    local defTemplate = windows and windows:FindFirstChild("DefenseTemplate")
+    if not defTemplate then
+        warn("[Defense] No se encontró Windows.DefenseTemplate en PlayerGui")
+        return false
+    end
+
+    -- Abrir la interfaz, intentar click en el Start y cerrarla rápidamente
+    print("[Defense] DefenseTemplate encontrado, abriendo para enviar click Start")
+    defTemplate.Visible = true
+    task.wait(0.35)
+
+    local main = defTemplate:FindFirstChild("Main")
+    local actions = main and main:FindFirstChild("Actions")
+    local startButton = actions and actions:FindFirstChild("Start", true)
+    if not startButton then
+        startButton = actions and actions:FindFirstChildWhichIsA("GuiButton", true)
+    end
+    local clicked = false
+
+    if startButton then
+        local absPos = startButton.AbsolutePosition
+        local absSize = startButton.AbsoluteSize
+        local centerPos = Vector2.new(absPos.X + absSize.X / 2, absPos.Y + absSize.Y / 2)
+        print("[Defense] Start ImageButton encontrado, Name:", startButton.Name, "ClassName:", startButton.ClassName, "AbsolutePosition:", absPos, "Size:", absSize, "ClickCenter:", centerPos)
+        pcall(function()
+            startButton:Activate()
+        end)
+        clicked = true
+
+        -- También intentar click físico por si Activate() no basta
+        if typeof(SimulateGuiClick) == "function" then
+            SimulateGuiClick(startButton, absPos)
+        else
+            VirtualInputManager:SendMouseMoveEvent(centerPos.X, centerPos.Y, game, 0)
+            task.wait(0.03)
+            VirtualInputManager:SendMouseButtonEvent(centerPos.X, centerPos.Y, 0, true, game, 0)
+            task.wait(0.03)
+            VirtualInputManager:SendMouseButtonEvent(centerPos.X, centerPos.Y, 0, false, game, 0)
+        end
+    else
+        warn("[Defense] No se encontró Start ni GuiButton en Actions dentro de DefenseTemplate")
+    end
+
+    if clicked then
+        print("[Defense] Click Start enviado en DefenseTemplate")
+
+        -- Esperar hasta que DefenseGui se marque como activo, con timeout
+        local activated = false
+        local startTime = os.clock()
+        local timeout = 2 -- segundos
+        repeat
+            local dgCheck = playerGui and playerGui:FindFirstChild("DefenseGui")
+            if dgCheck then
+                if dgCheck.Enabled == true then
+                    activated = true
+                    break
+                end
+                if typeof(dgCheck.GetAttribute) == "function" and dgCheck:GetAttribute("Enabled") == true then
+                    activated = true
+                    break
+                end
+                local dataCheck = dgCheck:FindFirstChild("Data")
+                if dataCheck then
+                    local enabledChild = dataCheck:FindFirstChild("Enabled")
+                    if enabledChild and enabledChild:IsA("BoolValue") and enabledChild.Value == true then
+                        activated = true
+                        break
+                    end
+                    if typeof(dataCheck.GetAttribute) == "function" and dataCheck:GetAttribute("Enabled") == true then
+                        activated = true
+                        break
+                    end
+                end
+            end
+            task.wait(0.15)
+        until (os.clock() - startTime) > timeout
+
+        if activated then
+            print("[Defense] DefenseGui activado tras click, cerrando template")
+        else
+            warn("[Defense] Tras el click no se detectó activación de DefenseGui (timeout), cerrando template")
+        end
+    else
+        warn("[Defense] No se pudo simular el click en Start")
+    end
+
+    defTemplate.Visible = false
+    return true
+end
+
+local function StartAutoJoinDefenseLoop()
+    AutoJoinDefenseToken += 1
+    local token = AutoJoinDefenseToken
+
+    task.spawn(function()
+        print("[Defense] StartAutoJoinDefenseLoop iniciado")
+
+        -- Intento inmediato al activar (comprobando Data.Enabled)
+        if State.AutoJoinDefense and token == AutoJoinDefenseToken then
+            print("[Defense] Intento inmediato de JoinDefense al activar toggle")
+            pcall(TryJoinDefense)
+        end
+
+        while State.AutoJoinDefense and token == AutoJoinDefenseToken do
+                local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+                local dg = playerGui and playerGui:FindFirstChild("DefenseGui")
+                local isActive = false
+                if dg then
+                    -- Revisar propiedad ScreenGui.Enabled
+                    if dg.Enabled == true then
+                        isActive = true
+                    end
+
+                    -- Revisar atributo Enabled en el ScreenGui
+                    if not isActive and typeof(dg.GetAttribute) == "function" then
+                        local dgAttr = dg:GetAttribute("Enabled")
+                        if dgAttr == true then isActive = true end
+                    end
+
+                    -- Revisar Data.Enabled como antes
+                    if not isActive then
+                        local data = dg:FindFirstChild("Data")
+                        if data then
+                            local enabledChild = data:FindFirstChild("Enabled")
+                            if enabledChild and enabledChild:IsA("BoolValue") then
+                                isActive = enabledChild.Value
+                            elseif typeof(data.GetAttribute) == "function" then
+                                local attr = data:GetAttribute("Enabled")
+                                if attr ~= nil then isActive = attr end
+                            end
+                        end
+                    end
+                end
+
+            if not isActive then
+                print("[Defense] DefenseGui no activo, intentando JoinDefense...")
+                pcall(TryJoinDefense)
+            else
+                print("[Defense] DefenseGui activo (Data.Enabled=true), omitiendo join")
+            end
+
+            task.wait(3)
+        end
+    end)
+end
+
+local function GetDefenseEnemies()
+    local list = {}
+    local defenseArenas = Workspace:FindFirstChild("DefenseArenas")
+    local world4 = defenseArenas and defenseArenas:FindFirstChild("World4")
+    local folder = world4 and world4:FindFirstChild("Enemies")
+    if not folder then
+        return list
+    end
+
+    for _, enemy in ipairs(folder:GetChildren()) do
+        if enemy:IsA("Model") and enemy:FindFirstChild("HumanoidRootPart") then
+            local isDead = enemy:GetAttribute("EnemyDead")
+            if isDead ~= true then
+                table.insert(list, enemy)
+            end
+        end
+    end
+
+    return list
+end
+
+local function RunAutoDefense()
+    AutoDefenseToken += 1
+    local token = AutoDefenseToken
+
+    task.spawn(function()
+        while State.AutoDefense and token == AutoDefenseToken do
+            local enemies = GetDefenseEnemies()
+            if #enemies == 0 then
+                task.wait(0.5)
+                continue
+            end
+
+            for _, enemy in ipairs(enemies) do
+                if not State.AutoDefense or token ~= AutoDefenseToken then
+                    break
+                end
+
+                -- Mantener teletransportándose continuamente cerca del NPC mientras se mueve
+                while State.AutoDefense and token == AutoDefenseToken and enemy and enemy.Parent and enemy:GetAttribute("EnemyDead") ~= true do
+                    local char = LocalPlayer.Character
+                    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                    local targetHRP = enemy and enemy:FindFirstChild("HumanoidRootPart")
+
+                    if hrp and targetHRP then
+                        -- Colocar ligeramente detrás del NPC para seguirlo sin superponer
+                        local offset = Vector3.new(0, 0, 3)
+                        local targetPos = targetHRP.Position
+                        -- Añadir pequeña elevación para evitar quedar dentro del suelo
+                        local safePos = targetPos + Vector3.new(0, 2, 0) - (targetHRP.CFrame.LookVector * 2)
+                        hrp.CFrame = CFrame.new(safePos, targetPos)
+                    end
+
+                    task.wait(0.08)
+                end
+
+                task.wait(0.2)
+            end
         end
     end)
 end
@@ -706,7 +1096,7 @@ local function FireStars()
                     ["n"] = 2,
                 },
             },
-            [2] = "\\"
+            [2] = "_"
         }
     }
 
@@ -752,10 +1142,27 @@ Tab:CreateToggle({
     CurrentValue = false,
     Callback = function(Value)
         State.AutofarmEnabled = Value
+        
         if Value then
-            RunAutoFarm()
+            -- Forzamos la limpieza del token para evitar hilos duplicados
+            FarmToken += 1 
+            task.spawn(function()
+                print("🌾 BUCLE AUTOFARM PRINCIPAL ACTIVADO")
+                
+                while State.AutofarmEnabled do
+                    -- 👍 CORREGIDO: Ahora llama a la función real 'RunAutoFarm'
+                    local ok, err = pcall(RunAutoFarm)
+                    if not ok then
+                        print("[AutoFarm Error]:", err)
+                    end
+                    
+                    task.wait(1) -- Un segundo es suficiente para verificar el estado
+                end
+                
+                print("🛑 BUCLE AUTOFARM PRINCIPAL DETENIDO")
+            end)
         else
-            FarmToken += 1 -- Cancela el bucle anterior
+            FarmToken += 1 -- Apaga hilos en segundo plano de RunAutoFarm
         end
     end,
 })
@@ -816,22 +1223,27 @@ TrialTab:CreateToggle({
     CurrentValue = false,
     Callback = function(Value)
         State.TrialEnabled = Value
+        
         if Value then
             task.spawn(function()
-                -- Buscamos la carpeta de forma segura pero directa
-                local arenas = Workspace:WaitForChild("TimeTrialArenas", 5)
-                local easyArena = arenas and arenas:WaitForChild("Easy", 5)
-                local TrialFolder = easyArena and easyArena:FindFirstChild("Enemies")
-                
-                if not TrialFolder then 
-                    print("[AutoFarm Error] No se encontró la carpeta de enemigos de la Trial.")
-                    return 
-                end
+                print("⚔️ BUCLE AUTO-FARM TRIAL REPETITIVO ACTIVADO")
                 
                 while State.TrialEnabled do
+                    -- Buscamos las carpetas DENTRO del bucle en cada vuelta
+                    local arenas = Workspace:FindFirstChild("TimeTrialArenas")
+                    local easyArena = arenas and arenas:FindFirstChild("Easy")
+                    local TrialFolder = easyArena and easyArena:FindFirstChild("Enemies")
+                    
+                    -- Si las carpetas aún no cargan (pantalla de carga/cambio de wave), esperamos y continuamos
+                    if not TrialFolder then 
+                        print("[AutoFarm Trial] Esperando a que aparezcan los enemigos...")
+                        task.wait(1) 
+                        continue 
+                    end
+                    
                     local target = nil
                     
-                    -- Buscamos el objetivo más cercano o el primero disponible
+                    -- Buscamos el objetivo válido
                     for _, enemy in pairs(TrialFolder:GetChildren()) do
                         if enemy:FindFirstChild("HumanoidRootPart") then
                             local isDead = enemy:GetAttribute("EnemyDead")
@@ -845,30 +1257,60 @@ TrialTab:CreateToggle({
                     if target and target:FindFirstChild("HumanoidRootPart") then
                         local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                         if hrp then
+                            -- Teletransporte a la espalda del enemigo
                             hrp.CFrame = target.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
                         end
                         
-                        -- El bucle se rompe en cuanto el NPC tiene EnemyDead = true o desaparece
+                        -- Nos quedamos pegados al enemigo de forma segura
                         repeat 
-                            task.wait(0.01)
+                            pcall(function()
+                                if State.TrialEnabled and hrp and target:FindFirstChild("HumanoidRootPart") then
+                                    hrp.CFrame = target.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+                                end
+                            end) -- <--- ¡AQUÍ ESTABA EL ERROR! Ya está corregido a 'end)'
+                            task.wait(0.05) 
                         until not State.TrialEnabled or not target.Parent or target:GetAttribute("EnemyDead") == true
                     else
-                        task.wait(0.05)
+                        -- Si la carpeta existe pero no hay enemigos vivos, esperamos un momento el nuevo spawn
+                        task.wait(0.2)
                     end
                 end
+                
+                print("🛑 BUCLE AUTO-FARM TRIAL DETENIDO")
             end)
         end
     end,
 })
 
 local RaidTab = Window:CreateTab("Raid", "shield")
+
 RaidTab:CreateToggle({
     Name = "AutoFarm Raid",
     CurrentValue = false,
     Callback = function(Value)
         State.RaidAutoFarm = Value
+        
         if Value then
-            RunRaidAutoFarm()
+            -- 🛡️ SEGURIDAD: Si está activado el farm común, lo pausamos para la Raid
+            if State.AutofarmEnabled then
+                print("[Raid] Pausando AutoFarm normal para evitar conflicto de TP")
+            end
+            
+            RaidFarmToken += 1
+            task.spawn(function()
+                print("🤖 BUCLE AUTO-FARM RAID ACTIVADO")
+                
+                while State.RaidAutoFarm do
+                    local ok, err = pcall(RunRaidAutoFarm)
+                    if not ok then
+                        print("[Raid Farm Error]:", err)
+                    end
+                    
+                    task.wait(0.5) 
+                end
+                
+                print("🛑 BUCLE AUTO-FARM RAID DETENIDO")
+            end)
         else
             RaidFarmToken += 1
         end
@@ -914,6 +1356,45 @@ RaidTab:CreateToggle({
             StartAutoExitRaidLoop()
         else
             AutoExitRaidToken += 1
+        end
+    end,
+})
+
+local DefenseTab = Window:CreateTab("Defense", "shield")
+
+DefenseTab:CreateToggle({
+    Name = "Auto Join Defense",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.AutoJoinDefense = Value
+        if Value then
+            StartAutoJoinDefenseLoop()
+        else
+            AutoJoinDefenseToken += 1
+        end
+    end,
+})
+
+DefenseTab:CreateToggle({
+    Name = "Auto Defense",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.AutoDefense = Value
+        
+        if Value then
+            task.spawn(function()
+                print("🛡️ BUCLE AUTO-DEFENSE ACTIVADO")
+                
+                while State.AutoDefense do
+                    -- Ejecuta tu función de defensa de forma segura
+                    -- Nota: Asegúrate de que el nombre exacto de tu función sea RunAutoDefense
+                    pcall(RunAutoDefense) 
+                    
+                    task.wait(1) -- Espera 1 segundo antes de reintentar
+                end
+                
+                print("🛑 BUCLE AUTO-DEFENSE DETENIDO")
+            end)
         end
     end,
 })
@@ -1063,7 +1544,7 @@ GachaTab:CreateToggle({
                     local args = {
                         [1] = {
                             [1] = "World0",
-                            [2] = "\145"
+                            [2] = "\150"
                         }
                     }
                     if remote and typeof(remote.FireServer) == "function" then
