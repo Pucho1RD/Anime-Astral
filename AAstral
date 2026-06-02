@@ -175,7 +175,7 @@ local function GetCurrentRaidWave()
 
     if wave:IsA("TextLabel") or wave:IsA("TextBox") then
         local currentWave = NormalizeWaveValue(wave.Text)
-        print("[Raid Exit Debug] Wave actual leída: " .. tostring(wave.Text) .. " -> " .. tostring(currentWave))
+        print("[Raid Debug] Wave actual leída: " .. tostring(wave.Text) .. " -> " .. tostring(currentWave))
         return currentWave
     end
 
@@ -759,7 +759,7 @@ local function TryJoinDefense()
             if typeof(data.GetAttribute) == "function" then
                 local attr = data:GetAttribute("Enabled")
                 if attr == true then
-                    print("[Defense] DefenseGui.Data.Enabled attribute == true, ya activo")
+                    print("[Defense] ya activo")
                     return false
                 end
             end
@@ -876,10 +876,10 @@ local function StartAutoJoinDefenseLoop()
                         print("[Defense] Ya entró en un modo tras la espera, omitiendo JoinDefense")
                     end
                 else
-                    print("[Defense] DefenseGui no activo, pero jugador ya en modo " .. tostring(activeMode) .. ", omitiendo JoinDefense")
+                    print("[Defense] no activo, pero jugador ya en modo " .. tostring(activeMode) .. ", omitiendo JoinDefense")
                 end
             else
-                print("[Defense] DefenseGui activo (Data.Enabled=true), omitiendo join")
+                print("[Defense] activo , omitiendo join")
             end
 
             task.wait(3)
@@ -1151,13 +1151,13 @@ local function StartAutoDefenseLoop()
     task.spawn(function()
         while State.AutoDefense and token == AutoDefenseToken do
             if State.DefenseAutoFarmPaused or not CanRunGamemode("Defense") then
-                task.wait(0.5)
+                task.wait(1)
                 continue
             end
 
             local enemies = GetDefenseEnemies()
             if #enemies == 0 then
-                task.wait(0.5)
+                task.wait(1)
                 continue
             end
 
@@ -1173,10 +1173,10 @@ local function StartAutoDefenseLoop()
                     if hrp and targetHRP then
                         hrp.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 3)
                     end
-                    task.wait(0.08)
+                    task.wait(0.7)
                 end
 
-                task.wait(0.2)
+                task.wait(6)
             end
         end
     end)
@@ -1197,7 +1197,7 @@ local function StartAutoExitDefenseLoop()
             end
 
             if not IsDefenseGuiActive() then
-                print("[Defense Exit] DefenseGui no está activo todavía, esperando antes de evaluar la ola")
+                print("[Defense Exit] Defense no está activo todavía, esperando antes de evaluar la ola")
                 task.wait(1)
                 continue
             end
