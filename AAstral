@@ -475,11 +475,11 @@ local function SendLoadoutRemote(selection, requireWorldContext)
             return false
         end
     end
-
+    --LOADOUT REMOTE 
     local args = {
         [1] = {
             [1] = selection,
-            [2] = "<"
+            [2] = ">"
         }
     }
 
