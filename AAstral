@@ -264,102 +264,6 @@ local function GetCurrentTrialRoom()
     return nil
 end
 
-local function SimulateGuiClick(guiObject, useAbsolutePosition)
-    if not guiObject or not guiObject:IsA("GuiButton") then
-        return false
-    end
-
-    local absPos = guiObject.AbsolutePosition
-    local absSize = guiObject.AbsoluteSize
-    if absSize.X <= 0 or absSize.Y <= 0 then
-        return false
-    end
-
-    print("[SimulateGuiClick] Posición esquina:", absPos.X, absPos.Y)
-    print("[SimulateGuiClick] Tamaño:", absSize.X, absSize.Y)
-
-    -- 🛠️ CONTROL DE BAJADA (OFFSET EN PÍXELES)
-    -- Ajusta este valor si necesitas que baje más (ej: 40, 50, etc.)
-    local offsetY = 36
-
-    -- Cambiamos las multiplicaciones por el cálculo del centro real más el ajuste vertical
-    local x = absPos.X + absSize.X / 2
-    local y = absPos.Y + absSize.Y / 2 + offsetY
-
-    if useAbsolutePosition and ((typeof(useAbsolutePosition) == "Vector2") or type(useAbsolutePosition) == "table") and useAbsolutePosition.X and useAbsolutePosition.Y then
-        x = useAbsolutePosition.X + absSize.X / 2
-        y = useAbsolutePosition.Y + absSize.Y / 2 + offsetY
-    end
-
-    local camera = workspace.CurrentCamera
-    local viewport = (camera and camera.ViewportSize) or Vector2.new(1920, 1080)
-    if type(math.clamp) == "function" then
-        x = math.clamp(x, 1, viewport.X - 1)
-        y = math.clamp(y, 1, viewport.Y - 1)
-    else
-        if x < 1 then x = 1 elseif x > viewport.X - 1 then x = viewport.X - 1 end
-        if y < 1 then y = 1 elseif y > viewport.Y - 1 then y = viewport.Y - 1 end
-    end
-
-    print("[SimulateGuiClick] Intentando click físico modificado abajo:", x, y, "viewport:", viewport)
-    pcall(function()
-        print(">>> ENVIANDO MOVIMIENTO DE MOUSE A:", x, y)
-        VirtualInputManager:SendMouseMoveEvent(x, y, game, 0)
-        task.wait(0.03)
-        print(">>> ENVIANDO MOUSE DOWN")
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-        task.wait(0.03)
-        print(">>> ENVIANDO MOUSE UP - CLICK COMPLETADO")
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
-    end)
-
-    local function tryFireSignal()
-        if type(firesignal) == "function" then
-            return pcall(firesignal, guiObject.MouseButton1Click)
-        end
-        return false
-    end
-
-    local function tryGetConnections()
-        if type(getconnections) == "function" then
-            local conns = getconnections(guiObject.MouseButton1Click)
-            if type(conns) == "table" then
-                for _, conn in ipairs(conns) do
-                    if type(conn.Function) == "function" then
-                        local ok = pcall(conn.Function, guiObject)
-                        if ok then
-                            return true
-                        end
-                    end
-                end
-            end
-        end
-        return false
-    end
-
-    local function tryGuiService()
-        local GuiService = game:GetService("GuiService")
-        if GuiService and typeof(GuiService.SelectedObject) ~= "nil" then
-            return pcall(function()
-                GuiService.SelectedObject = guiObject
-            end)
-        end
-        return false
-    end
-
-    if tryFireSignal() then
-        return true
-    end
-    if tryGetConnections() then
-        return true
-    end
-    if tryGuiService() then
-        return true
-    end
-
-    return true
-end
-
 local function TryLeaveRaidWithGui()
     local gui = LocalPlayer:FindFirstChild("PlayerGui")
     local raid = gui and gui:FindFirstChild("RaidGui")
@@ -898,7 +802,7 @@ local function StartAutoJoinDefenseLoop()
                 local activeMode = GetCurrentVisibilityGamemode()
                 if activeMode == nil then
                     print("[Defense] Jugador fuera de modo, esperando 8s antes de enviar Create como Raid")
-                    task.wait(8)
+                    task.wait(4)
                     if not State.AutoJoinDefense or token ~= AutoJoinDefenseToken then
                         continue
                     end
@@ -955,8 +859,8 @@ local function StartAutoJoinRaidLoop()
 
             local activeMode = GetCurrentVisibilityGamemode()
             if activeMode == nil then
-                print("[Raid Join] Jugador fuera de un modo, esperando 8s antes de enviar Create")
-                task.wait(8)
+                print("[Raid Join] Jugador fuera de un modo, esperando 5s antes de enviar Create")
+                task.wait(5)
                 if not State.AutoJoinRaid or token ~= AutoJoinRaidToken then
                     break
                 end
@@ -1013,38 +917,51 @@ local function RunAutoRaidFarm()
     task.spawn(function()
         while State.RaidAutoFarm and token == RaidFarmToken do
             if State.RaidAutoFarmPaused or not CanRunGamemode("Raid") then
-                task.wait(0.5)
+                task.wait(0.1)
                 continue
             end
 
             local enemies = GetRaidEnemies()
             if #enemies == 0 then
-                task.wait(0.5)
+                task.wait(0.1)
                 continue
             end
 
             print("[Raid Farm] Enemigos detectados")
-            task.wait(0.3)
+            task.wait(0.1)
 
             if not State.RaidAutoFarm or token ~= RaidFarmToken or State.RaidAutoFarmPaused or not CanRunGamemode("Raid") then
                 continue
             end
 
+            local target = nil
             for _, enemy in ipairs(enemies) do
-                if not State.RaidAutoFarm or token ~= RaidFarmToken or State.RaidAutoFarmPaused or not CanRunGamemode("Raid") then
+                if not IsEnemyFinished(enemy) then
+                    target = enemy
                     break
                 end
-
-                local char = LocalPlayer.Character
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                local targetHRP = enemy:FindFirstChild("HumanoidRootPart")
-                if hrp and targetHRP then
-                    hrp.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 3)
-                end
-                task.wait(0.3)
             end
 
-            task.wait(0.2)
+            if not target then
+                task.wait(0.1)
+                continue
+            end
+
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local targetHRP = target and target:FindFirstChild("HumanoidRootPart")
+            if not hrp or not targetHRP then
+                task.wait(0.1)
+                continue
+            end
+
+            hrp.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 3)
+
+            repeat
+                task.wait(0.05)
+            until not State.RaidAutoFarm or token ~= RaidFarmToken or State.RaidAutoFarmPaused or not CanRunGamemode("Raid") or IsEnemyFinished(target)
+
+            task.wait(0.1)
         end
     end)
 end
@@ -1098,11 +1015,11 @@ local function StartAutoExitRaidLoop()
                     warn("[Raid Exit] Falló el teletransporte final a World" .. tostring(State.RaidExitTeleporter))
                 end
 
-                task.wait(2)
+                task.wait(1)
                 State.RaidAutoFarmPaused = false
             end
 
-            task.wait(2)
+            task.wait(1)
         end
     end)
 end
@@ -1210,7 +1127,7 @@ local function StartAutoDefenseLoop()
                     task.wait(0.7)
                 end
 
-                task.wait(6)
+                task.wait(1)
             end
         end
     end)
@@ -1289,6 +1206,7 @@ end
 local function StartAutoExitTrialLoop()
     AutoExitTrialToken += 1
     local token = AutoExitTrialToken
+    local hasExitedThisTrial = false
 
     task.spawn(function()
         while State.AutoExitTrial and token == AutoExitTrialToken do
@@ -1299,37 +1217,40 @@ local function StartAutoExitTrialLoop()
                 local desiredRoomNumber = NormalizeRoomNumber(State.ExitWave)
                 print("[Trial Exit Debug] Room actual: " .. tostring(currentRoom) .. " (" .. tostring(currentRoomNumber) .. "), room deseada: " .. tostring(desiredRoom) .. " (" .. tostring(desiredRoomNumber) .. ")")
                 if currentRoom and ((currentRoomNumber and desiredRoomNumber and currentRoomNumber >= desiredRoomNumber) or currentRoom == desiredRoom) then
-                    if State.TrialEnabled then
-                        State.TrialAutoFarmPaused = true
-                        print("[Trial Exit] Pausando AutoFarm Trial antes de salir")
-                        task.wait(0.5)
-                    end
+                    if not hasExitedThisTrial then
+                        hasExitedThisTrial = true
+                        if State.TrialEnabled then
+                            State.TrialAutoFarmPaused = true
+                            print("[Trial Exit] Pausando AutoFarm Trial antes de salir")
+                            task.wait(0.5)
+                        end
 
-                    local chosenWorld = tonumber(State.ExitTeleporter) or State.ExitTeleporter
-                    local intermediateWorld = chosenWorld == 1 and 2 or 1
+                        local chosenWorld = tonumber(State.ExitTeleporter) or State.ExitTeleporter
+                        local intermediateWorld = chosenWorld == 1 and 2 or 1
 
-                    if FireWorldTeleport(intermediateWorld) then
-                        print("[Trial Exit] Teleportando primero a World" .. tostring(intermediateWorld) .. " (salida intermedia)")
+                        if FireWorldTeleport(intermediateWorld) then
+                            print("[Trial Exit] Teleportando primero a World" .. tostring(intermediateWorld) .. " (salida intermedia)")
+                            task.wait(1)
+                        else
+                            warn("[Trial Exit] Falló el teletransporte intermedio a World" .. tostring(intermediateWorld))
+                        end
+
+                        if FireWorldTeleport(State.ExitTeleporter) then
+                            print("[Trial Exit] Salida enviada al teletransportador World" .. tostring(State.ExitTeleporter))
+                        else
+                            warn("[Trial Exit] Falló el teletransporte final a World" .. tostring(State.ExitTeleporter))
+                        end
+
                         task.wait(1)
-                    else
-                        warn("[Trial Exit] Falló el teletransporte intermedio a World" .. tostring(intermediateWorld))
+                        State.TrialAutoFarmPaused = false
+                        warn("[Trial Exit] Salida ejecutada en room " .. tostring(currentRoom))
+                        TeleportToSavedTrialPositionAfterExit()
                     end
-
-                    if FireWorldTeleport(State.ExitTeleporter) then
-                        print("[Trial Exit] Salida enviada al teletransportador World" .. tostring(State.ExitTeleporter))
-                    else
-                        warn("[Trial Exit] Falló el teletransporte final a World" .. tostring(State.ExitTeleporter))
-                    end
-
-                    task.wait(2)
-                    State.TrialAutoFarmPaused = false
-                    warn("[Trial Exit] Salida ejecutada en room " .. tostring(currentRoom))
-                    TeleportToSavedTrialPositionAfterExit()
-                    State.AutoExitTrial = false
-                    break
+                else
+                    hasExitedThisTrial = false
                 end
             end
-            task.wait(2)
+            task.wait(0.7)
         end
     end)
 end
@@ -1343,7 +1264,7 @@ local function BestPower()
             local args = {
                 [1] = {
                     [1] = "Power",
-                    [2] = "<"
+                    [2] = ">"
                 }
             }
 
@@ -1530,7 +1451,7 @@ TrialTab:CreateToggle({
 
             while State.TrialEnabled and token == TrialFarmToken do
                 if State.TrialAutoFarmPaused then
-                    task.wait(0.5)
+                    task.wait(1)
                     continue
                 end
 
@@ -1577,7 +1498,7 @@ TrialTab:CreateToggle({
                     until not State.TrialEnabled or not target.Parent or target:GetAttribute("EnemyDead") == true
                 else
                     -- Si la carpeta existe pero no hay enemigos vivos, esperamos un momento el nuevo spawn
-                    task.wait(2)
+                    task.wait(1)
                 end
             end
 
