@@ -83,7 +83,6 @@ local function TeleportToSavedTrialPositionAfterExit()
     end
 
     local savedCFrame = State.TrialSavedCFrame
-    State.TrialSavedCFrame = nil
 
     task.delay(7, function()
         local success = TeleportPlayerToCFrame(savedCFrame)
