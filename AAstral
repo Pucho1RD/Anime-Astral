@@ -636,6 +636,7 @@ local RaidFarmToken = 0
 local AutoExitRaidToken = 0
 local AutoExitDefenseToken = 0
 local AutoDefenseToken = 0
+local HunterToken = 0
 
 local function JoinTrial()
     print("[Trial Join] Usando teletransporte directo al part de unión")
@@ -1793,6 +1794,39 @@ GachaTab:CreateToggle({
             end)
         else
             FamilyToken += 1
+        end
+    end,
+})
+
+
+GachaTab:CreateToggle({
+    Name = "Hunter",
+    CurrentValue = false,
+    Callback = function(Value)
+        State.Hunter = Value
+        if Value then
+            HunterToken += 1
+            local token = HunterToken
+            task.spawn(function()
+                while State.Hunter and token == HunterToken do
+                    local bridge = ReplicatedStorage:FindFirstChild("BridgeNet2")
+                    local remote = bridge and bridge:FindFirstChild("dataRemoteEvent")
+                    local args = {
+                        [1] = {
+                            [1] = "World5",
+                            [2] = "N",
+                        },
+                    }
+                    if remote and typeof(remote.FireServer) == "function" then
+                        remote:FireServer(unpack(args))
+                    else
+                        warn("[Gacha Hunter] Remote no encontrado")
+                    end
+                    task.wait(0.3)
+                end
+            end)
+        else
+            HunterToken += 1
         end
     end,
 })
